@@ -4,6 +4,7 @@ param(
     [string]$OutputPath,
     [string]$PythonPath,
     [string]$WinUnpackedPath,
+    [string]$StageDirectory,
     [string]$MakeAppxPath = 'C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64\makeappx.exe',
     [string]$MinVersion = '10.0.19041.0',
     [string]$MaxVersionTested = '10.0.26100.0'
@@ -77,7 +78,14 @@ function Assert-RealDirectory {
 [IO.Directory]::CreateDirectory($distRoot) | Out-Null
 Assert-RealDirectory $distRoot
 $stageId = '{0}-{1}' -f (Get-Date -Format 'yyyyMMdd-HHmmss'), ([Guid]::NewGuid().ToString('N').Substring(0, 8))
-$stageRoot = Join-Path $distRoot "appx-stage-$stageId"
+$stageBase = $distRoot
+if ($StageDirectory) {
+    if (-not [IO.Path]::IsPathRooted($StageDirectory)) { $StageDirectory = Join-Path $repoRoot $StageDirectory }
+    $stageBase = [IO.Path]::GetFullPath($StageDirectory)
+    [IO.Directory]::CreateDirectory($stageBase) | Out-Null
+    Assert-RealDirectory $stageBase
+}
+$stageRoot = Join-Path $stageBase "appx-stage-$stageId"
 if (Test-Path -LiteralPath $stageRoot) { throw "Stage path already exists: $stageRoot" }
 [IO.Directory]::CreateDirectory($stageRoot) | Out-Null
 $layoutRoot = Join-Path $stageRoot 'layout'

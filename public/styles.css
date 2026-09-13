@@ -1211,6 +1211,13 @@ input:focus-visible {
   gap: 10px;
 }
 
+@media (max-width: 900px) {
+  .sponsor-widget {
+    position: static;
+    margin: 16px 18px 18px;
+  }
+}
+
 .sponsor-toggle {
   width: 46px;
   height: 46px;

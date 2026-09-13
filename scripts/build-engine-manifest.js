@@ -9,8 +9,8 @@
 //   - Writer/Calc/Impress 组件（swlo/sclo/sdlo）——冒烟 CSV→PDF 用到 Calc+导出链，
 //     真实转换用到 Writer/Impress
 //   - 注册表资源：share/registry/*.xcd（过滤器/组件注册全在其中）
-//   - 大小全记录；≤5MB 的加 sha256（mergedlo 147MB 级只 stat——全量哈希会拖垮
-//     AppContainer 盘上的首启，大文件损坏由冒烟转换兜底）。
+//   - 关键文件全部记录 sha256，保证同大小的引擎升级也产生不同缓存标识。
+//     运行时哈希在准备 worker 中执行，不阻塞桌面窗口。
 // 用法：node scripts/build-engine-manifest.js [bundleDir]   默认 bin/libreoffice
 // 产物：<bundleDir>/engine-integrity.json（随 extraResources 进包）
 
@@ -21,7 +21,7 @@ const path = require("path");
 const ROOT = path.join(__dirname, "..");
 const bundleDir = path.resolve(process.argv[2] || path.join(ROOT, "bin", "libreoffice"));
 const LO_ROOT = "LibreOfficePortable/App/libreoffice";
-const HASH_SIZE_LIMIT = 5 * 1024 * 1024;
+const HASH_SIZE_LIMIT = Number.MAX_SAFE_INTEGER;
 
 const CRITICAL_BASENAMES = [
   "soffice.com",

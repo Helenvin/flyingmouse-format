@@ -27,6 +27,8 @@ const {
   pdfInput,
   pdfTextTargets,
   pdfImageTargets,
+  subtitleInput,
+  subtitleTargets,
   audioInput,
   videoInput,
   mediaAudioTargets,
@@ -156,6 +158,7 @@ function categoryForExt(rawExt) {
   // designInput（.ai/.psd）归入图片分类：前端/路由与 jpg 等一致，解码在 prepareImageInput 中转。
   if (imageInput.has(ext) || imageInput.has(rawExt) || designInput.has(ext) || rawInput.has(ext) || rawInput.has(rawExt)) return "image";
   if (pdfInput.has(ext) || pdfInput.has(rawExt)) return "pdf";
+  if (subtitleInput.has(ext)) return "subtitle";
   if (documentInput.has(ext) || documentInput.has(rawExt)) return "document";
   if (spreadsheetInput.has(ext) || spreadsheetInput.has(rawExt)) return "spreadsheet";
   if (presentationInput.has(ext) || presentationInput.has(rawExt)) return "presentation";
@@ -169,6 +172,7 @@ function categoryForExt(rawExt) {
 function targetsForExt(rawExt, tools) {
   const category = categoryForExt(rawExt);
   const targets = new Set();
+  if (category === "subtitle") return subtitleTargets.filter(target => target !== normalizeExt(rawExt));
 
   if (category === "image") {
     imageFormatTargets.forEach((target) => targets.add(target));
@@ -301,6 +305,7 @@ function outputPathFor(originalName, targetExt, outputExt = targetExt) {
 
 function previewKindFor(downloadName, mimeType) {
   const ext = normalizeExt(extFromName(downloadName));
+  if (subtitleInput.has(ext)) return "text";
   if (String(mimeType).startsWith("image/")) return "image";
   if (mimeType === "application/pdf" || ext === "pdf") return "pdf";
   if (String(mimeType).startsWith("audio/")) return "audio";

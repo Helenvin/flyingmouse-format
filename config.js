@@ -30,6 +30,11 @@ function bundledFfmpegPath() {
 }
 
 function bundledLibreOfficePath() {
+  // Store preparation fixes its writable destination before this module loads.
+  // On a cold launch it does not exist yet; falling back by existence would bind
+  // every converter to the read-only installation for the lifetime of the app.
+  const preparedPath = require("./office-readiness").getOfficeState().path;
+  if (preparedPath) return preparedPath;
   const resourcesPath = process.resourcesPath || "";
   const candidates = [
     process.env.FLYINGMOUSE_LIBREOFFICE_PATH,
@@ -151,7 +156,7 @@ const rawInput = new Set(["cr2", "cr3", "crw", "nef", "arw", "dng", "raf", "rw2"
 // tga/jp2/jxl/qoi/ppm 输出：sharp 的预编译编码器不全，统一走打包内置 ffmpeg。
 const imageFormatTargets = ["png", "jpg", "webp", "gif", "avif", "tiff", "ico", "bmp", "tga", "jp2", "jxl", "qoi", "ppm", "pdf"];
 const imageVideoTargets = ["mp4", "webm"];
-const imageOcrTargets = ["txt"];
+const imageOcrTargets = ["txt", "docx", "md"];
 const imageTargets = [...imageFormatTargets, ...imageVideoTargets, ...imageOcrTargets];
 const textInput = new Set(["txt", "md", "markdown", "html", "htm", "json", "csv", "log", "xml", "yaml", "yml", "epub", "mobi"]);
 const textTargets = ["txt", "md", "html", "json", "csv", "epub"];
@@ -164,7 +169,9 @@ const spreadsheetTargets = ["pdf", "xlsx", "xls", "ods", "csv", "html"];
 const presentationInput = new Set(["ppt", "pptx", "odp", "dps", "dpt"]);
 const presentationTargets = ["pdf", "pptx", "odp", "html", "png", "jpg"];
 const pdfInput = new Set(["pdf"]);
-const pdfTextTargets = ["xlsx", "txt", "html", "docx"];
+const pdfTextTargets = ["xlsx", "txt", "html", "docx", "md"];
+const subtitleInput = new Set(["srt", "vtt", "ass", "ssa"]);
+const subtitleTargets = ["srt", "vtt", "ass", "ssa", "txt"];
 // webp 输出经 png 二跳（poppler 只出 png/jpg；sharp 有 webp 编码器）
 const pdfImageTargets = ["png", "jpg", "webp"];
 const pdfTargets = [...pdfTextTargets, ...pdfImageTargets, "pdf"];
@@ -192,6 +199,7 @@ const allTargets = new Set([
   ...spreadsheetTargets,
   ...presentationTargets,
   ...pdfTargets,
+  ...subtitleTargets,
   ...mediaTargets
 ]);
 
@@ -235,6 +243,8 @@ module.exports = {
   pdfTextTargets,
   pdfImageTargets,
   pdfTargets,
+  subtitleInput,
+  subtitleTargets,
   audioInput,
   videoInput,
   mediaAudioTargets,

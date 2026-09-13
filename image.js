@@ -60,8 +60,28 @@ async function convertImage(inputPath, outputPath, target, options = {}) {
 
     if (target === "txt") {
       const { convertImageToOcrText } = require("./ocr");
-      await convertImageToOcrText(prepared.inputPath, outputPath);
-      return { warnings: [] };
+      return await convertImageToOcrText(prepared.inputPath, outputPath);
+    }
+
+    if (target === "docx" || target === "md") {
+      const { recognizeImageResult } = require("./ocr");
+      const result = await recognizeImageResult(prepared.inputPath);
+      if (!result.text.trim()) {
+        const error = new Error("OCR 没有识别出文字，请确认图片清晰、方向正确。");
+        error.code = "OCR_NO_TEXT";
+        error.messages = { zhCN: error.message, enUS: "OCR found no text. Check image clarity and orientation." };
+        throw error;
+      }
+      if (target === "docx") {
+        await require("./text-docx").convertTextToDocx(result.text, "txt", outputPath);
+      } else {
+        const text = result.text.replace(/([\\`*_\[\]<>|#])/g, '\\$1');
+        await fsp.writeFile(outputPath, text + '\n', "utf8");
+      }
+      return { warnings: [...result.warnings, { code: "OCR_EDITABLE_TEXT", messages: {
+        zhCN: "已生成可编辑文字；原图中的表格、图片位置和样式未重建，请对照原图复核。",
+        enUS: "Editable text was created. Original tables, image positions and styling were not reconstructed; review against the source image."
+      } }] };
     }
 
     if (target === "ico") {

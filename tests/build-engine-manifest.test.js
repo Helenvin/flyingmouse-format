@@ -16,11 +16,14 @@ test("generated manifest includes real ICU names and detects a removed ICU DLL",
   await fs.mkdir(registry, { recursive: true });
   const names = ["soffice.com", "soffice.bin", "soffice.ini", "bootstraplo.dll", "sal3.dll", "mergedlo.dll", "vclplug_winlo.dll", "stocserviceslo.dll", "i18nlangtag.dll", "swlo.dll", "sclo.dll", "sdlo.dll", "icuuc78.dll", "icuin78.dll", "icudt78.dll"];
   for (const name of names) await fs.writeFile(path.join(program, name), `fixture ${name}`);
+  // Same-size changes in a large DLL must change the engine's content key.
+  await fs.writeFile(path.join(program, "mergedlo.dll"), Buffer.alloc(6 * 1024 * 1024, 42));
   await fs.writeFile(path.join(registry, "main.xcd"), "registry");
   const script = path.join(__dirname, "..", "scripts", "build-engine-manifest.js");
   execFileSync(process.execPath, [script, root], { windowsHide: true, stdio: "pipe" });
   const manifest = readManifest(root);
   assert.equal(Object.keys(manifest.files).filter((rel) => /\/icu/.test(rel)).length, 3);
+  assert.match(manifest.files["LibreOfficePortable/App/libreoffice/program/mergedlo.dll"].sha256, /^[a-f0-9]{64}$/);
   assert.ok(verifyIntegrity(root, manifest).ok);
   await fs.rm(path.join(program, "icuuc78.dll"));
   assert.equal(verifyIntegrity(root, manifest).ok, false);

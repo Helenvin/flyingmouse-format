@@ -5,32 +5,13 @@
 const fs = require("fs/promises");
 const path = require("path");
 const { downloadToFile, partialPathFor, publishDownloadedFile } = require("./save-download");
+const { rewriteAssetReferences } = require("./markdown-asset-references");
 
 function assetName(value) {
   const name = String(value || "");
   if (!name || name === "." || name === ".." || /[\\/:\0]/.test(name)
     || path.basename(name) !== name) throw new Error("保存失败：附件名称无效。");
   return name;
-}
-
-function rewriteAssetReferences(markdown, originalFileName, assets, directoryName) {
-  const base = `${path.parse(path.basename(originalFileName)).name}.assets`;
-  const prefixes = [...new Set([base, encodeURI(base), encodeURIComponent(base)])];
-  let rewritten = markdown;
-  for (const asset of assets) {
-    for (const prefix of prefixes) {
-      for (const name of new Set([asset.name, encodeURI(asset.name), encodeURIComponent(asset.name)])) {
-        const original = `${prefix}/${name}`.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-        // Do not let image.png satisfy a missing image.png.other reference.
-        rewritten = rewritten.replace(new RegExp(`${original}(?=[\\s)\\]"'<>?#]|$)`, "g"),
-          `${directoryName}/${encodeURIComponent(asset.name)}`);
-      }
-    }
-  }
-  if (prefixes.some((prefix) => rewritten.includes(`${prefix}/`))) {
-    throw new Error("保存失败：Markdown 引用的附件不完整，请重新转换后保存。");
-  }
-  return rewritten;
 }
 
 async function saveConvertedResult(result, destination, options = {}) {

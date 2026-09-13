@@ -33,6 +33,8 @@ const {
 const { buildPdfTableWorkbook, detectTableLinesFromRaw } = require("./pdf-table-runtime");
 const { convertOfdToPdf } = require("./ofd-convert");
 const { OfficeEngineError, probeLibreOffice, runLibreOffice } = require("./office-engine");
+const { getOfficeState, waitForOfficeReady, OfficePreparationError } = require("./office-readiness");
+const { getStructuredPdfAvailability } = require("./pdf-structure-engine");
 const { inspectXlsxForCsv } = require("./office-quality");
 const logger = require("./logger");
 
@@ -62,6 +64,7 @@ const {
   escapeHtml
 } = require("./utils");
 const { convertMedia, probeAudioTrack } = require("./media");
+const { convertSubtitle } = require("./subtitles");
 const { zipFiles, openZipEntries, readZipEntryToFile, listZipEntries } = require("./zip-util");
 const {
   convertPdfDecrypt,
@@ -303,21 +306,35 @@ async function listDownloadAssets(assetsDir, downloadUrl) {
 
 let cachedTools = null;
 let cachedToolDetails = {};
+let toolsPromise = null;
+let officeProbePromise = null;
+
+async function refreshOfficeCapability() {
+  const state = getOfficeState();
+  if (state.status !== "ready") {
+    cachedToolDetails.libreoffice = {
+      enabled: false, status: state.status,
+      ...(state.error ? { errorCode: state.error.code, messages: state.error.messages, details: state.error.details } : {})
+    };
+    officeProbePromise = null;
+    return false;
+  }
+  if (!officeProbePromise) {
+    officeProbePromise = probeLibreOffice(LIBREOFFICE_PATH, { runtimeDir: RUNTIME_DIR }).then((probe) => {
+      cachedToolDetails.libreoffice = { ...probe, status: probe.enabled ? "ready" : "failed" };
+      return Boolean(probe.enabled);
+    }).catch((error) => {
+      cachedToolDetails.libreoffice = { enabled: false, status: "failed",
+        errorCode: error.code || "OFFICE_ENGINE_START_FAILED", messages: error.messages, details: error.details };
+      logger.warn("LibreOffice capability probe failed", error);
+      return false;
+    });
+  }
+  return officeProbePromise;
+}
 
 async function getTools() {
-  if (!cachedTools) {
-    let officeProbe = null;
-    try {
-      officeProbe = await probeLibreOffice(LIBREOFFICE_PATH, { runtimeDir: RUNTIME_DIR });
-      cachedToolDetails.libreoffice = officeProbe;
-    } catch (error) {
-      cachedToolDetails.libreoffice = {
-        enabled: false,
-        errorCode: error.code || "OFFICE_ENGINE_START_FAILED",
-        messages: error.messages
-      };
-      logger.warn("LibreOffice capability probe failed", error);
-    }
+  if (!toolsPromise) toolsPromise = (async () => {
     const pandocExecutable = pandocPath();
     let pandocEnabled = false;
     try {
@@ -333,17 +350,21 @@ async function getTools() {
         messages: { zhCN: "Markdown 文档引擎缺失或无法启动；Word/PDF 转换暂不可用，请修复安装。", enUS: "The Markdown document engine is missing or cannot start. Repair the installation to enable Word/PDF conversion." }
       };
     }
-    cachedTools = {
+    cachedToolDetails.pdfStructure = await getStructuredPdfAvailability();
+    return {
       ffmpeg: await commandExists(FFMPEG_PATH),
-      libreoffice: Boolean(officeProbe?.enabled),
+      libreoffice: false,
       pandoc: pandocEnabled,
       poppler: await commandExists(PDFTOPPM_PATH, ["-v"]),
       ocr: ocrAvailable(),
       pdf: true,
+      pdfStructure: Boolean(cachedToolDetails.pdfStructure.enabled),
       sharp: true
     };
-  }
-  return cachedTools;
+  })();
+  const [baseTools, officeEnabled] = await Promise.all([toolsPromise, refreshOfficeCapability()]);
+  cachedTools = { ...baseTools, libreoffice: officeEnabled };
+  return { ...cachedTools };
 }
 
 async function getToolDiagnostics() {
@@ -355,6 +376,7 @@ async function getToolDiagnostics() {
     poppler: { enabled: tools.poppler, executable: PDFTOPPM_PATH },
     ocr: { enabled: tools.ocr, version: require("tesseract.js/package.json").version },
     pdfjs: { enabled: tools.pdf, version: require("pdfjs-dist/package.json").version },
+    pdfStructure: { ...cachedToolDetails.pdfStructure },
     sharp: { enabled: tools.sharp, version: sharp.versions.sharp }
   };
 }
@@ -417,6 +439,7 @@ app.get("/api/capabilities", async (_req, res) => {
     groups: {
       image: { inputs: [...imageInput, ...designInput, ...(DCRAW_PATH ? rawInput : [])].sort(), targets: [...imageFormatTargets, ...(tools.ffmpeg ? imageVideoTargets : []), ...(tools.ocr ? imageOcrTargets : [])], experimentalInputs: [...(experimentalInputsByCategory.image || []), ...(DCRAW_PATH ? rawInput : [])].sort() },
       text: { inputs: [...textInput].sort(), targets: [...textTargets, ...(tools.libreoffice ? ["pdf"] : []), "docx"] },
+      subtitle: { inputs: [...config.subtitleInput], targets: config.subtitleTargets },
       document: { inputs: [...documentInput].sort(), targets: documentTargets, experimentalInputs: experimentalInputsByCategory.document },
       spreadsheet: { inputs: [...spreadsheetInput].sort(), targets: spreadsheetTargets, experimentalInputs: experimentalInputsByCategory.spreadsheet },
       presentation: { inputs: [...presentationInput].sort(), targets: presentationTargets, experimentalInputs: experimentalInputsByCategory.presentation },
@@ -428,7 +451,7 @@ app.get("/api/capabilities", async (_req, res) => {
     optional: [
       { name: "LibreOffice", enabled: tools.libreoffice, formats: ["doc", "docx", "xls", "xlsx", "ppt", "pptx", "wps", "pdf"] },
       { name: "Pandoc Markdown", enabled: tools.pandoc, formats: ["md", "docx", "pdf"] },
-      { name: "PDF table extractor", enabled: tools.pdf, formats: ["pdf", "xlsx", "txt", "html"] },
+      { name: "PDF structure and scanned tables", enabled: tools.pdfStructure, formats: ["pdf", "xlsx", "docx"], limits: cachedToolDetails.pdfStructure?.limits },
       { name: "Poppler PDF renderer", enabled: tools.poppler, formats: ["pdf", "png", "jpg"] },
       { name: "Tesseract OCR", enabled: tools.ocr, formats: ["image", "pdf", "txt"] }
     ]
@@ -580,7 +603,7 @@ app.post("/api/merge-pdfs", assertLocalWebRequest, upload.array("files"), async 
 });
 
 app.post("/api/convert", assertLocalWebRequest, upload.single("file"), async (req, res) => {
-  const tools = await getTools();
+  let tools = await getTools();
   const file = req.file;
   const originalName = decodeUploadFileName(file?.originalname);
   const requestedTarget = normalizeExt(String(req.body.targetFormat || "").toLowerCase());
@@ -599,6 +622,26 @@ app.post("/api/convert", assertLocalWebRequest, upload.single("file"), async (re
 
   const inputExt = normalizeExt(extFromName(originalName));
   const category = categoryForExt(inputExt);
+  // A queued CLI/API Office conversion may arrive while the first Store launch
+  // is still preparing its writable engine. Only this conversion waits; normal
+  // capability requests and all unrelated formats remain responsive.
+  if (!tools.libreoffice && targetsForExt(inputExt, { ...tools, libreoffice: true }).includes(requestedTarget)
+    && !targetsForExt(inputExt, tools).includes(requestedTarget)) {
+    try {
+      await waitForOfficeReady();
+      tools = await getTools();
+      if (!tools.libreoffice) {
+        const detail = cachedToolDetails.libreoffice;
+        throw Object.assign(new Error(detail.messages?.zhCN || "Office 引擎不可用，请修复安装。"), {
+          code: detail.errorCode || "OFFICE_ENGINE_START_FAILED", messages: detail.messages, details: detail.details
+        });
+      }
+    } catch (error) {
+      await fsp.rm(file.path, { force: true }).catch(() => {});
+      res.status(503).json({ error: error.message, errorCode: error.code, messages: error.messages, details: error.details });
+      return;
+    }
+  }
   const allowedTargets = targetsForExt(inputExt, tools);
   logger.info(`Convert request: "${originalName}" (${inputExt}/${category}) -> ${requestedTarget} (${file.size} bytes)`);
 
@@ -622,6 +665,8 @@ app.post("/api/convert", assertLocalWebRequest, upload.single("file"), async (re
   try {
     if (category === "image") {
       conversionResult = await convertImage(file.path, outputPath, requestedTarget, { inputName: originalName });
+    } else if (category === "subtitle") {
+      conversionResult = await convertSubtitle(file.path, outputPath, inputExt, requestedTarget);
     } else if (category === "text") {
       if (["epub", "mobi"].includes(inputExt)) {
         conversionResult = await convertEbook(file.path, outputPath, inputExt, requestedTarget, originalName);
@@ -740,7 +785,7 @@ app.post("/api/convert", assertLocalWebRequest, upload.single("file"), async (re
       "PDF_TABLE_OCR_LOW_QUALITY"
     ].includes(error?.code) || /^(?:MARKDOWN|EPUB|MOBI)_/.test(error?.code || "");
     const isResourceLimitError = error instanceof ResourceLimitError;
-    const isOfficeEngineError = error instanceof OfficeEngineError;
+    const isOfficeEngineError = error instanceof OfficeEngineError || error instanceof OfficePreparationError;
     if (isClientConversionError || isResourceLimitError) logger.warn(`Convert rejected: "${originalName}" -> ${requestedTarget}`, error);
     else logger.error(`Convert failed: "${originalName}" -> ${requestedTarget}`, error);
     await fsp.rm(file.path, { force: true }).catch(() => {});

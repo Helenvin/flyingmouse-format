@@ -108,6 +108,7 @@ const { LANGUAGE_STORAGE_KEY, createI18n } = window.FlyingMouseI18n;
 const messages = {
   "zh-CN": {
     "workspace.aria": "文件转换工作台", "brand.title": "鼠鼠帮你把文件转成需要的格式",
+    "brand.usage": "仅供个人免费使用，禁止商业售卖/转卖/套壳 · 仅支持普通音乐格式转换，不支持其他音乐平台的加密特殊格式 · 请支持正版音乐",
     "language.label": "语言", "health.checking": "正在检测转换引擎", "health.failed": "检测失败",
     "theme.label": "外观", "theme.system": "跟随系统", "theme.light": "浅色", "theme.dark": "深色",
     "settings.degraded": "偏好设置暂时无法保存，本次仍可正常转换；重启后可能恢复默认设置。",
@@ -155,6 +156,7 @@ const messages = {
   },
   "en-US": {
     "workspace.aria": "File conversion workspace", "brand.title": "Let Mouse convert files into the format you need",
+    "brand.usage": "Free for personal use; commercial sale, resale and rebranding are prohibited · Supports standard audio formats; encrypted music-service formats are unsupported · Please support licensed music",
     "language.label": "Language", "health.checking": "Checking conversion engines", "health.failed": "Check failed",
     "theme.label": "Appearance", "theme.system": "System", "theme.light": "Light", "theme.dark": "Dark",
     "settings.degraded": "Preferences could not be saved this session. Converting still works; defaults may return after restart.",
@@ -221,8 +223,16 @@ function renderHealth() {
   if (state.capabilities.tools.pandoc) enabled.push("Markdown → Word");
   if (state.capabilities.tools.ffmpeg) enabled.push(i18n.language === "en-US" ? "Audio/Video" : "音视频");
   toolHealth.textContent = i18n.language === "en-US" ? `${enabled.join(", ")} enabled` : `${enabled.join("、")} 已启用`;
+  if (state.capabilities.toolDetails?.pdfStructure?.profile === "lite") {
+    toolHealth.textContent += i18n.language === "en-US" ? " · Lite edition" : " · 轻量版";
+  }
   const limitations = [];
-  if (!state.capabilities.tools.libreoffice) limitations.push(t("upload.limited"));
+  const office = state.capabilities.toolDetails?.libreoffice;
+  if (office?.status === "pending") limitations.push(i18n.language === "en-US"
+    ? "Preparing the Office engine; image, text and subtitle conversion is available."
+    : "Office 引擎正在准备，图片、文本和字幕转换可以先使用。");
+  else if (!state.capabilities.tools.libreoffice) limitations.push(
+    office?.messages?.[i18n.language === "en-US" ? "enUS" : "zhCN"] || t("upload.limited"));
   if (!state.capabilities.tools.pandoc) limitations.push(t("upload.markdownLimited"));
   dropHint.textContent = limitations.length ? limitations.join(" ") : t("upload.hint");
 }
@@ -252,6 +262,7 @@ const mouseAssets = {
 const labels = {
   image: "图片",
   text: "文本",
+  subtitle: "字幕",
   document: "Word/WPS 文档",
   spreadsheet: "Excel/WPS 表格",
   presentation: "PPT/WPS 演示",
@@ -270,7 +281,7 @@ const statusLabels = {
 };
 
 const englishLabels = {
-  image: "Image", text: "Text", document: "Word/WPS document", spreadsheet: "Excel/WPS spreadsheet",
+  image: "Image", text: "Text", subtitle: "Subtitle", document: "Word/WPS document", spreadsheet: "Excel/WPS spreadsheet",
   presentation: "PPT/WPS presentation", pdf: "PDF", audio: "Audio", video: "Video", any: "Any file", unknown: "Unknown type"
 };
 const englishStatusLabels = { pending: "Waiting", converting: "Converting", success: "Complete", error: "Failed" };
@@ -420,15 +431,51 @@ function clearFile() {
   setWorkflowStep("select");
 }
 
+let capabilityRefreshTimer;
+let officeTargetsNeedRefresh = false;
 async function fetchCapabilities() {
+  clearTimeout(capabilityRefreshTimer);
+  const wasPreparing = state.capabilities?.toolDetails?.libreoffice?.status === "pending";
   const response = await fetch("/api/capabilities");
   if (!response.ok) throw new Error(i18n.language === "en-US" ? "Unable to read conversion capabilities." : "无法读取转换能力。");
   state.capabilities = await response.json();
+  if (wasPreparing && state.capabilities.toolDetails?.libreoffice?.status !== "pending") officeTargetsNeedRefresh = true;
 
   toolHealth.classList.add("ok");
 
   renderFormatTable();
   renderHealth();
+  syncPdfExcelHint();
+  if (state.capabilities.toolDetails?.libreoffice?.status === "pending") {
+    capabilityRefreshTimer = setTimeout(() => fetchCapabilities().catch(() => {
+      capabilityRefreshTimer = setTimeout(() => fetchCapabilities().catch(console.warn), 5000);
+    }), 2000);
+  } else if (officeTargetsNeedRefresh && state.isConverting) {
+    capabilityRefreshTimer = setTimeout(() => fetchCapabilities().catch(console.warn), 2000);
+  } else if (officeTargetsNeedRefresh && state.files.length) {
+    // Only add newly available targets; never reset results, selected files or
+    // the current target when asynchronous Office preparation finishes.
+    const files = [...state.files];
+    const infos = await Promise.all(files.map(loadTargets));
+    if (state.isConverting) {
+      capabilityRefreshTimer = setTimeout(() => fetchCapabilities().catch(console.warn), 2000);
+      return;
+    }
+    if (files.length !== state.files.length || files.some((file, index) => state.files[index] !== file)) return;
+    state.fileInfos = infos;
+    officeTargetsNeedRefresh = false;
+    const targets = commonTargetsFrom(infos);
+    if (!targetSelect.value) targetSelect.replaceChildren();
+    for (const target of targets) {
+      if ([...targetSelect.options].some(option => option.value === target)) continue;
+      const option = document.createElement("option");
+      option.value = target;
+      option.textContent = target.toUpperCase();
+      targetSelect.append(option);
+    }
+    targetSelect.disabled = !targets.length;
+    convertButton.disabled = !targets.length;
+  }
 }
 
 function renderFormatTable() {
@@ -437,6 +484,7 @@ function renderFormatTable() {
   const items = [
     ["image", groups.image],
     ["text", groups.text],
+    ["subtitle", groups.subtitle],
     ["document", groups.document],
     ["spreadsheet", groups.spreadsheet],
     ["presentation", groups.presentation],
@@ -662,6 +710,19 @@ function syncPdfExcelHint() {
   pdfExcelHint.hidden = !(targetSelect.value === "xlsx"
     && state.fileInfos.length > 0
     && state.fileInfos.every((info) => info.category === "pdf"));
+  if (!pdfExcelHint.hidden) {
+    const structure = state.capabilities?.toolDetails?.pdfStructure;
+    const limits = structure?.limits;
+    if (structure?.profile === "lite") {
+      pdfExcelHint.textContent = i18n.language === "en-US"
+        ? "Lite supports native PDF tables. Advanced scanned-table recognition requires the full edition; text OCR, Word and Markdown remain available."
+        : "轻量版支持文字型 PDF 表格；扫描表格结构识别需要完整版。文字 OCR、Word 和 Markdown 转换仍可使用。";
+      return;
+    }
+    pdfExcelHint.textContent = i18n.language === "en-US"
+      ? `Table recognition depends on scan clarity. ${structure?.enabled === false ? 'The scanned-table engine is unavailable; repair the installation. ' : ''}${limits ? `Structured recognition accepts up to ${limits.maxPages} pages and ${Math.round(limits.maxTotalPixels / 1e6)} million rendered pixels per job; split large PDFs first.` : ''}`
+      : `表格识别效果取决于扫描清晰度。${structure?.enabled === false ? '扫描表格引擎不可用，请修复安装。' : ''}${limits ? `结构识别每次最多 ${limits.maxPages} 页、累计 ${Math.round(limits.maxTotalPixels / 1e6)} 百万渲染像素；较大 PDF 请先拆分。` : ''}`;
+  }
 }
 
 async function acceptFiles(fileList) {

@@ -12,6 +12,7 @@ const { run, commandExists } = require("./utils");
 const { inspectImageMetadata } = require("./image");
 const { ocrAvailable, createOcrWorker } = require("./ocr");
 const { loadPdfjs } = require("./pdfjs");
+const { imageCoverageFromOperators } = require("./pdf-classifier");
 const { LIMITS, assertPdfPages } = require("./resource-policy");
 const { buildPdfTableWorkbook, detectTableLinesFromRaw } = require("./pdf-table-runtime");
 
@@ -118,10 +119,12 @@ async function extractPdfRowsByPage(inputPath) {
       const page = await pdf.getPage(pageNumber);
       try {
         const viewport = page.getViewport({ scale: 1, rotation: page.rotate || 0 });
-        const content = await page.getTextContent();
+        const [content, operators] = await Promise.all([page.getTextContent(), page.getOperatorList()]);
         const lines = groupPdfItemsIntoLines(content.items, viewport);
         pages.push({ name: `Page ${pageNumber}`, pageNumber, width: viewport.width,
-          height: viewport.height, lines, rows: lines.map((line) => line.cells) });
+          height: viewport.height, lines, rows: lines.map((line) => line.cells),
+          imageCoverage: imageCoverageFromOperators(operators, pdfjsLib.OPS, viewport),
+          blank: !lines.length && operators.fnArray.length === 0 });
       } finally {
         page.cleanup();
       }

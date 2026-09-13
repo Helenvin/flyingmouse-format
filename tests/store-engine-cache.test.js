@@ -11,6 +11,8 @@ const { test } = require("node:test");
 
 const {
   prepareWritableEngineBundle,
+  prepareWritableEngineBundleAsync,
+  resolveWritableEngineBundle,
   readManifest,
   verifyIntegrity
 } = require("../store-engine-cache");
@@ -229,4 +231,90 @@ test("smoke rejects a magic-only PDF and a valid blank PDF, accepts expected tex
     } });
     assert.equal(outcome.ok, success, outcome.reason);
   }
+});
+
+test("unchanged validated cache skips real smoke across app-version-only updates", async (t) => {
+  const { root, bundle } = await makeBundle(t, "receipt");
+  const manifest = { schema: 1, generatedAt: "old", files: {
+    [`${LO_SUB}/soffice.com`.split(path.sep).join("/")]: { size: 10 }
+  } };
+  const manifestPath = path.join(bundle, "engine-integrity.json");
+  fs.writeFileSync(manifestPath, JSON.stringify(manifest));
+  let calls = 0;
+  const options = { bundledBundle: bundle, bundledSofficePath: path.join(bundle, LO_SUB, "soffice.com"),
+    enginesRoot: path.join(root, "engines"), smokeTest: () => { calls += 1; return { ok: true }; } };
+  const first = prepareWritableEngineBundle(options);
+  assert.equal(first.source, "published");
+  manifest.generatedAt = "new";
+  fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+  const next = prepareWritableEngineBundle(options);
+  assert.equal(next.source, "cache");
+  assert.equal(first.path, next.path);
+  assert.equal(calls, 1, "unchanged receipt must avoid the expensive native conversion");
+});
+
+test("changes to an unlisted dependency invalidate the receipt and rebuild the cache", async (t) => {
+  const { root, bundle } = await makeBundle(t, "receipt-change", { extras: { "writer-filter.dat": "original" } });
+  fs.writeFileSync(path.join(bundle, "engine-integrity.json"), JSON.stringify({ schema: 1, files: {
+    [`${LO_SUB}/soffice.com`.split(path.sep).join("/")]: { size: 10 }
+  } }));
+  let calls = 0;
+  const options = { bundledBundle: bundle, bundledSofficePath: path.join(bundle, LO_SUB, "soffice.com"),
+    enginesRoot: path.join(root, "engines"), smokeTest: () => { calls += 1; return { ok: true }; } };
+  prepareWritableEngineBundle(options);
+  const { destBundle } = resolveWritableEngineBundle(options);
+  fs.rmSync(path.join(destBundle, "writer-filter.dat"));
+  const rebuilt = prepareWritableEngineBundle(options);
+  assert.equal(rebuilt.source, "published");
+  assert.equal(fs.readFileSync(path.join(destBundle, "writer-filter.dat"), "utf8"), "original");
+  assert.equal(calls, 2);
+});
+
+test("content key changes for a same-size critical binary update", async (t) => {
+  const { root, bundle } = await makeBundle(t, "content-key");
+  const manifestPath = path.join(bundle, "engine-integrity.json");
+  const manifest = { schema: 1, files: { "program.dll": { size: 10, sha256: "a".repeat(64) } } };
+  fs.writeFileSync(manifestPath, JSON.stringify(manifest));
+  const options = { bundledBundle: bundle, enginesRoot: path.join(root, "engines") };
+  const first = resolveWritableEngineBundle(options);
+  manifest.files["program.dll"].sha256 = "b".repeat(64);
+  fs.writeFileSync(manifestPath, JSON.stringify(manifest));
+  assert.notEqual(first.path, resolveWritableEngineBundle(options).path);
+  assert.throws(() => resolveWritableEngineBundle({ ...options, bundleName: "../outside" }), /Invalid/);
+});
+
+test("worker preparation leaves the main event loop responsive and reports failed validation", async (t) => {
+  const { root, bundle } = await makeBundle(t, "worker-incomplete", { withSoffice: false, extras: { "placeholder": "test" } });
+  let ticks = 0;
+  const timer = setInterval(() => { ticks += 1; }, 1);
+  t.after(() => clearInterval(timer));
+  const outcome = await prepareWritableEngineBundleAsync({ bundledBundle: bundle,
+    bundledSofficePath: path.join(bundle, LO_SUB, "soffice.com"), enginesRoot: path.join(root, "engines"), tmpRoot: root });
+  assert.equal(outcome.source, "bundled");
+  assert.match(outcome.reason, /soffice.com missing/);
+  assert.ok(ticks > 0, "main-thread timers must run while the worker prepares the engine");
+});
+
+test("normal Python bytecode regeneration preserves warm cache while source changes still rebuild", async (t) => {
+  const { root, bundle } = await makeBundle(t, "python-cache", { extras: {
+    "program/uno.py": "python source",
+    "program/__pycache__/uno.cpython-312.pyc": "staging bytecode",
+    "program/__pycache__/source_less.cpython-312.pyc": "required bytecode"
+  } });
+  fs.writeFileSync(path.join(bundle, "engine-integrity.json"), JSON.stringify({ schema: 1, files: {
+    [`${LO_SUB}/soffice.com`.split(path.sep).join("/")]: { size: 10 }
+  } }));
+  let calls = 0;
+  const options = { bundledBundle: bundle, bundledSofficePath: path.join(bundle, LO_SUB, "soffice.com"),
+    enginesRoot: path.join(root, "engines"), smokeTest: () => { calls++; return { ok: true }; } };
+  prepareWritableEngineBundle(options);
+  const { destBundle } = resolveWritableEngineBundle(options);
+  fs.writeFileSync(path.join(destBundle, "program/__pycache__/uno.cpython-312.pyc"), "compiled for final cache path");
+  assert.equal(prepareWritableEngineBundle(options).source, "cache");
+  assert.equal(calls, 1);
+  fs.rmSync(path.join(destBundle, "program/__pycache__/source_less.cpython-312.pyc"));
+  assert.equal(prepareWritableEngineBundle(options).source, "published");
+  fs.writeFileSync(path.join(destBundle, "program/uno.py"), "changed source");
+  assert.equal(prepareWritableEngineBundle(options).source, "published");
+  assert.equal(calls, 3);
 });

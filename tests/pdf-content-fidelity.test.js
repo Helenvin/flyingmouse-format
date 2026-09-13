@@ -37,7 +37,10 @@ async function pdfFixture(output, kind = "prose", rotation = 0) {
         page.drawText(text, { font, size: 12, x: 40 + index * 63, y: 730 }));
     }
     page.drawText("Conclusion after body", { font, size: 12, x: 40, y: 600 });
-    if (kind === "mixed") pdf.addPage([595, 842]);
+    if (kind === "mixed") {
+      const image = await pdf.embedPng(Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64"));
+      pdf.addPage([595, 842]).drawImage(image, { x: 0, y: 0, width: 595, height: 842 });
+    }
   }
   await fsp.writeFile(output, await pdf.save());
   return output;

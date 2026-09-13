@@ -15,7 +15,7 @@ const { PDFTOPPM_PATH, DOCENGINE_PATH, QPDF_PATH, pdfImageTargets } = require(".
 const { run, commandExists, escapeHtml, safeBaseName } = require("./utils");
 const { zipFiles, openZipEntries, openZipEntriesFromBuffer, readZipEntryToFile } = require("./zip-util");
 const { convertImagesToPdf } = require("./image");
-const { ocrAvailable, createOcrWorker, recognizeImageTextWithWorker } = require("./ocr");
+const { ocrAvailable, createOcrWorker, recognizeImageTextWithWorker, recognizeImageResultWithWorker } = require("./ocr");
 const { loadPdfjs } = require("./pdfjs");
 const { classifyPdf } = require("./pdf-classifier");
 const {
@@ -93,8 +93,17 @@ async function sourcePdfPages(inputPath, options = {}) {
   return options.pdfTextPages || (options.extractPdfRowsByPage || extractPdfRowsByPage)(inputPath);
 }
 
+function pdfPageNeedsOcr(page) {
+  return !page.ocr && page.blank !== true && (
+    !page.rows?.some((row) => row.some((cell) => String(cell).trim()))
+    || page.imageCoverage > 0
+  );
+}
+
 async function fillMissingPdfPageText(inputPath, pages, options = {}) {
-  const missing = pages.filter((page) => !page.rows?.some((row) => row.some((cell) => String(cell).trim())));
+  // A digital header does not make a raster body searchable. Empty pages alone
+  // need no OCR. Coverage also catches a scan behind a searchable stamp.
+  const missing = pages.filter(pdfPageNeedsOcr);
   if (!missing.length) return pages;
   if (!(options.ocrAvailable || ocrAvailable)()) {
     throw structureError("PDF_OCR_REQUIRED", "PDF 中有缺少文字层的页面，需要启用 OCR 引擎才能完整转换。",
@@ -109,8 +118,44 @@ async function fillMissingPdfPageText(inputPath, pages, options = {}) {
     for (const page of missing) {
       const pageNumber = page.pageNumber || pages.indexOf(page) + 1;
       const rendered = await (options.renderPdfTablePage || renderPdfTablePage)(inputPath, pageNumber, tempDir, 200);
-      const text = String(mergeCnSpaces(await (options.recognizeImageTextWithWorker || recognizeImageTextWithWorker)(worker, rendered.outputPath)) || "").trim();
-      completed.set(page, { ...page, ocr: true, rows: text ? text.split(/\r?\n/).filter((line) => line.trim()).map((line) => [line]) : [] });
+      const result = options.recognizeImageTextWithWorker
+        ? { text: await options.recognizeImageTextWithWorker(worker, rendered.outputPath), warnings: [] }
+        : await (options.recognizeImageResultWithWorker || recognizeImageResultWithWorker)(worker, rendered.outputPath);
+      const text = String(mergeCnSpaces(result.text) || "").trim();
+      const rows = text ? text.split(/\r?\n/).filter((line) => line.trim()).map((line) => [line]) : [];
+      const omittedNative = [];
+      for (const nativeRow of page.rows || []) {
+        const native = normalizedPdfText(nativeRow.join(' '));
+        if (!native) continue;
+        const index = rows.findIndex(row => normalizedPdfText(row.join(' ')) === native);
+        if (index >= 0) rows[index] = nativeRow;
+        else {
+          let restored = false;
+          for (const row of rows) {
+            const value = row.join(' ');
+            const normalized = [];
+            const spans = [];
+            let offset = 0;
+            for (const character of value) {
+              for (const letter of normalizedPdfText(character).split('')) {
+                normalized.push(letter);
+                spans.push([offset, offset + character.length]);
+              }
+              offset += character.length;
+            }
+            const at = normalized.join('').indexOf(native);
+            if (native.length > 1 && at >= 0) {
+              // Canonical matching locates a span only. Restore the exact native
+              // spelling and punctuation: 118600 must never replace 1186.00.
+              row.splice(0, row.length, value.slice(0, spans[at][0]) + nativeRow.join(' ') + value.slice(spans[at + native.length - 1][1]));
+              restored = true;
+              break;
+            }
+          }
+          if (!restored) omittedNative.push(nativeRow);
+        }
+      }
+      completed.set(page, { ...page, ocr: true, ocrWarnings: result.warnings || [], rows: [...omittedNative, ...rows] });
     }
     const result = pages.map((page) => completed.get(page) || page);
     if (!result.some((page) => page.rows.length)) {
@@ -171,9 +216,9 @@ function pdfOcrWarnings(pages) {
   const recognized = pages.filter((page) => page.ocr).map((page, index) => page.pageNumber || index + 1);
   if (!recognized.length) return [];
   return [{ code: "PDF_PAGES_OCR", messages: {
-    zhCN: `已对 ${recognized.length} 个缺少文字层的页面进行 OCR；识别出的字符、标点需要复核。`,
-    enUS: `OCR was applied to ${recognized.length} pages without a text layer. Review recognized characters and punctuation.`
-  } }];
+    zhCN: `已对 ${recognized.length} 个文字层缺失或不完整的页面进行 OCR；识别出的字符、标点需要复核。`,
+    enUS: `OCR was applied to ${recognized.length} pages with missing or incomplete text layers. Review recognized characters and punctuation.`
+  } }, ...new Map(pages.flatMap(page => page.ocrWarnings || []).map(warning => [warning.code, warning])).values()];
 }
 
 function selectedStructureManifest(manifest) {
@@ -360,6 +405,15 @@ async function convertPdf(inputPath, outputPath, target, options = {}) {
   const pages = await sourcePdfPages(inputPath, options);
   const hasExtractableRows = pages.some((page) => page.rows.length);
 
+  if (target === "md") {
+    const completePages = await fillMissingPdfPageText(inputPath, pages, options);
+    await fsp.writeFile(outputPath, pdfPagesToMarkdown(completePages), "utf8");
+    return { warnings: [...pdfOcrWarnings(completePages), { code: "PDF_MARKDOWN_REFLOW", messages: {
+      zhCN: "已提取文字、可辨认的标题和简单表格；Markdown 会重排版式，插图和复杂表格需对照原 PDF 复核。",
+      enUS: "Text, recognizable headings and simple tables were extracted. Markdown reflows the layout; check illustrations and complex tables against the PDF."
+    } }] };
+  }
+
   if (!hasExtractableRows) {
     if (target === "txt") {
       return convertScannedPdfToOcrText(inputPath, outputPath, options);
@@ -411,6 +465,28 @@ td{border:1px solid #999;padding:4px 8px;vertical-align:top}
   }
 
   throw new Error("PDF 暂时只支持转换为 XLSX、TXT、HTML、DOCX、PNG、JPG，或拆分为单页 PDF。");
+}
+
+function pdfPagesToMarkdown(pages) {
+  const escape = value => String(value ?? '').replace(/([\\`*_\[\]<>|#])/g, '\\$1').replace(/\r?\n/g, '<br>');
+  return pages.map(page => {
+    const heights = (page.lines || []).map(line => line.height).filter(Number.isFinite).sort((a, b) => a - b);
+    const bodyHeight = heights[Math.floor(heights.length / 2)] || 12;
+    const chunks = [];
+    for (let index = 0; index < page.rows.length; index += 1) {
+      const row = page.rows[index];
+      if (row.length > 1) {
+        const table = [row];
+        while (page.rows[index + 1]?.length === row.length) table.push(page.rows[++index]);
+        chunks.push(`| ${table[0].map(escape).join(' | ')} |\n| ${row.map(() => '---').join(' | ')} |\n`
+          + table.slice(1).map(cells => `| ${cells.map(escape).join(' | ')} |`).join('\n'));
+      } else {
+        const heading = !page.ocr && row[0]?.length < 160 && (page.lines?.[index]?.height || 0) >= bodyHeight * 1.35;
+        chunks.push(`${heading ? '## ' : ''}${escape(row[0])}`);
+      }
+    }
+    return chunks.join('\n\n');
+  }).join('\n\n---\n\n') + '\n';
 }
 
 function xmlDocxText(value) {
@@ -681,7 +757,7 @@ async function convertPdfToDocx(inputPath, outputPath, pages, options = {}) {
         await (options.run || run)(docenginePath, ["convert", inputPath, attemptPath], { timeout: 1000 * 60 * 10 });
         const validation = await (options.validateNativeDocx || validateNativePdfDocx)(attemptPath);
         const missing = missingPdfText(source, validation.editableText);
-        if (missing.length || source.some((page) => !page.rows.length)) {
+        if (missing.length || source.some(pdfPageNeedsOcr)) {
           throw structureError("PDF_DOCX_TEXT_COVERAGE_FAILED", "版式输出缺少原生文字。", "Layout output omitted native text.");
         }
         return validation;

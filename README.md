@@ -1,5 +1,7 @@
 # FlyingMouse Format / 飞鼠格式
 
+> **0.7.1 修复候选 / repair candidate**：新增字幕互转、PDF/图片转 Markdown、图片转可编辑 Word，并修复混合扫描正文、OCR 方向、多页 TIFF 和 Office 启动准备。可选轻量版不包含高级扫描表格引擎。当前尚未完成商店上架，详见 [修复说明](docs/REPAIR-0.7.1.md)。
+
 > A mouse-themed, offline Windows file converter. / 一款鼠鼠主题、可离线使用的 Windows 文件格式转换工具。
 
 > **作者 Author：牢蜂（LaoFeng）**
@@ -42,15 +44,15 @@
 - ICO 图标可转换为 PNG/JPG 等，PNG/JPG 也可生成多尺寸 ICO 图标（实验性）。
 - TGA 图片可转换为 PNG/JPG/WebP 等（内置 ffmpeg 解码，实验性）。
 - 相机 RAW 原片（CR2/CR3/NEF/ARW/DNG 等）可转换为 JPG/PNG/WebP/TIFF 等（内置 dcraw 解码，Windows 版，实验性）。
-- 资源保护：图片/批量/PDF/OCR 的大小与页数上限已整体放开（1:1 还原），超大文件取决于引擎与机器内存，长文档加载较慢；解码合法性与产物完整性校验保留。
+- 资源保护：普通转换受引擎能力和机器内存约束；高级 PDF 结构识别限制为 500 页、单页 5000 万像素、累计 1 亿像素（144 DPI），超限会明确提示。解码合法性与产物完整性校验保留。
 
 > **合规声明 Compliance Notice：本软件仅支持普通音频格式转换（MP3 / WAV / FLAC / AAC / OGG 等），不支持任何音乐平台的加密特殊格式。请支持正版音乐，尊重创作者。音频文件版权归原作者/唱片公司所有，本工具与各音乐平台无任何关联。本软件仅供个人免费使用，禁止商业售卖/转卖/套壳换皮重新发布。**
 
 ### 快速开始
 
-本轮 0.7.0 交付源码与 Windows Store APPX；NSIS/DMG 尚未随本轮发布。下方列出的各平台文件名是对应构建名称，只有实际出现在 Release 资产列表后才可下载。源码、APPX 交付和全平台公开发布分别验收。
+本轮 0.7.1 为修复候选：源码、Windows x64 完整版/轻量版 NSIS 和未签名 APPX 已在本地生成并验证，尚未上传到 Release 或 Microsoft Store；本轮未构建 Win7/macOS 安装包。下方各平台文件名仅代表构建命名，只有实际出现在 Release 资产列表后才可下载。详见[修复与验证说明](docs/REPAIR-0.7.1.md)。
 
-1. 全平台安装包发布后，在 [Releases](https://github.com/LaoFeng-mouse/flyingmouse-format/releases/latest) 下载 v0.7.0 对应系统的安装包；当前可从该页面选择已经发布的版本。
+1. 全平台安装包发布后，在 [Releases](https://github.com/LaoFeng-mouse/flyingmouse-format/releases/latest) 下载 v0.7.1 对应系统的安装包；当前可从该页面选择已经发布的版本。
 2. 安装并启动 FlyingMouse Format。
 3. 拖入文件，选择目标格式并开始转换。
 4. 选择保存位置；软件会记住目标格式与保存目录。
@@ -86,17 +88,17 @@ npm run dist
 
 ### Windows 版本选择
 
-- **Windows 10 / 11 x64（推荐）**：下载标准资产 `FlyingMouse-Format-Setup-0.7.0-x64.exe`。它使用 Electron 43、Sharp 0.35 和 PDF.js 6 运行时。
-- **Windows 7 SP1 x64（兼容版）**：下载 `FlyingMouse.Format-Setup-0.7.0-win7-x64.exe`。它使用同一源码和鼠鼠 UI，但在独立环境固定 Electron 22.3.27、Sharp 0.32.6 与 PDF.js 2.16.105。
+- **Windows 10 / 11 x64（推荐）**：下载标准资产 `FlyingMouse-Format-Setup-0.7.1-x64.exe`。它使用 Electron 43、Sharp 0.35 和 PDF.js 6 运行时。
+- **Windows 7 SP1 x64（兼容版）**：下载 `FlyingMouse.Format-Setup-0.7.1-win7-x64.exe`。它使用同一源码和鼠鼠 UI，但在独立环境固定 Electron 22.3.27、Sharp 0.32.6 与 PDF.js 2.16.105。
 
-Windows 7 兼容版是 Legacy 构建，不会降低标准版依赖。其 Electron 22 已停止上游安全维护，并包含无法在 Windows 7 上直接升级的已知依赖风险；PDF.js 动态代码执行已通过 `isEvalSupported: false` 缓解，但仍只建议离线处理可信文件。v0.7.0 通过 Windows、macOS arm64 和 macOS x64 自动化门禁以及真实样本回归；真实 Windows 7 SP1 x64 设备仍待验收。Windows 安装包均未签名，SmartScreen 可能提示。
+Windows 7 兼容版是 Legacy 构建，不会降低标准版依赖。其 Electron 22 已停止上游安全维护，并包含无法在 Windows 7 上直接升级的已知依赖风险；PDF.js 动态代码执行已通过 `isEvalSupported: false` 缓解，但仍只建议离线处理可信文件。v0.7.1 已完成本地 Windows 主线测试与真实样本回归；远程 CI、macOS、Win7 构建及真实 Windows 7 SP1 x64 设备仍待验收。Windows 安装包均未签名，SmartScreen 可能提示。
 
 ### macOS 版本选择
 
-- **Apple Silicon（M1 及更新）**：下载 `FlyingMouse.Format-Setup-0.7.0-mac-arm64.dmg`。
-- **Intel Mac**：下载 `FlyingMouse.Format-Setup-0.7.0-mac-x64.dmg`。
+- **Apple Silicon（M1 及更新）**：下载 `FlyingMouse.Format-Setup-0.7.1-mac-arm64.dmg`。
+- **Intel Mac**：下载 `FlyingMouse.Format-Setup-0.7.1-mac-x64.dmg`。
 
-首批 macOS 包支持 macOS 11 及更新版本，未签名且未公证，可能触发 Gatekeeper。两个架构已在原生 GitHub runner 完成固定引擎、完整转换、包结构和 12 秒启动冒烟；真实 Mac 设备仍待验收。
+macOS 构建目标为 macOS 11 及更新版本，未签名且未公证，可能触发 Gatekeeper。历史版本的原生 GitHub runner 验证不能替代本轮验收；0.7.1 的两个架构尚未构建或验证，真实 Mac 设备仍待验收。
 
 完整构建只需：
 
@@ -133,15 +135,15 @@ Win7 staging 使用专用 `win7-package-lock.json` 和 `npm ci` 重建；推荐�
 - ICO icons convert to PNG/JPG and more; PNG/JPG can also produce multi-size ICO icons (experimental).
 - TGA images convert to PNG/JPG/WebP and more (built-in ffmpeg decoding, experimental).
 - Camera RAW files (CR2/CR3/NEF/ARW/DNG, etc.) convert to JPG/PNG/WebP/TIFF and more (built-in dcraw decoding, Windows build, experimental).
-- Resource safeguards: size, pixel, batch, PDF-page and OCR-page caps have been removed for 1:1 fidelity; very large files are bounded by engine and machine memory and may load slowly. Decode-validity and output-integrity checks remain.
+- Resource safeguards: ordinary conversions depend on engine capacity and available memory. Advanced PDF structure recognition is limited to 500 pages, 50 megapixels per page, and 100 megapixels total at 144 DPI, with explicit errors when exceeded. Decode-validity and output-integrity checks remain.
 
 > **Compliance Notice: this software supports only ordinary audio format conversion (MP3 / WAV / FLAC / AAC / OGG etc.) and does NOT support encrypted special formats from any music platform. Please support the artists and respect copyright. Audio file copyrights belong to the respective artists/labels; this tool is not affiliated with any music platform. The software is free for personal use only; commercial resale or repackaging is prohibited.**
 
 ### Quick start
 
-This 0.7.0 delivery contains source code and a Windows Store APPX. NSIS/DMG installers have not been published for this delivery; platform filenames below describe expected build outputs, and are downloadable only after they appear in the Release asset list.
+This 0.7.1 repair candidate includes source changes, locally built and verified Windows x64 full/lite NSIS installers, and an unsigned APPX. No Release or Microsoft Store upload has been performed, and Win7/macOS installers have not been built for this candidate. Platform filenames below describe build naming and become downloadable only after appearing in the Release assets. See the [repair and validation notes](docs/REPAIR-0.7.1.md).
 
-1. Once published, download the v0.7.0 build for your system from [Releases](https://github.com/LaoFeng-mouse/flyingmouse-format/releases/latest). Until then, choose an already published version listed there.
+1. Once published, download the v0.7.1 build for your system from [Releases](https://github.com/LaoFeng-mouse/flyingmouse-format/releases/latest). Until then, choose an already published version listed there.
 2. Install and launch FlyingMouse Format.
 3. Drop in files, choose a target, and convert.
 4. Choose a save location. The app remembers both the target preference and save folder.
@@ -163,17 +165,17 @@ Packaged builds accept the same commands after `--cli`: use `FlyingMouse Format.
 
 ### Choose a Windows build
 
-- **Windows 10 / 11 x64 (recommended):** use `FlyingMouse-Format-Setup-0.7.0-x64.exe` with Electron 43, Sharp 0.35, and PDF.js 6.
-- **Windows 7 SP1 x64 (compatibility build):** use `FlyingMouse.Format-Setup-0.7.0-win7-x64.exe`, derived from the same source and mouse UI with Electron 22.3.27, Sharp 0.32.6, and PDF.js 2.16.105 pinned in isolation.
+- **Windows 10 / 11 x64 (recommended):** use `FlyingMouse-Format-Setup-0.7.1-x64.exe` with Electron 43, Sharp 0.35, and PDF.js 6.
+- **Windows 7 SP1 x64 (compatibility build):** use `FlyingMouse.Format-Setup-0.7.1-win7-x64.exe`, derived from the same source and mouse UI with Electron 22.3.27, Sharp 0.32.6, and PDF.js 2.16.105 pinned in isolation.
 
-The Windows 7 package is a Legacy build and does not downgrade the standard build. Electron 22 no longer receives upstream security maintenance, and other known legacy dependency risks cannot be upgraded without dropping Windows 7. PDF.js dynamic evaluation is disabled as a mitigation, but this build should remain offline and process trusted files only. v0.7.0 passed Windows, native macOS arm64, and native macOS x64 automation gates plus real-sample regressions; acceptance on a physical Windows 7 SP1 x64 system is still pending. Both Windows installers are unsigned and may trigger SmartScreen.
+The Windows 7 package is a Legacy build and does not downgrade the standard build. Electron 22 no longer receives upstream security maintenance, and other known legacy dependency risks cannot be upgraded without dropping Windows 7. PDF.js dynamic evaluation is disabled as a mitigation, but this build should remain offline and process trusted files only. v0.7.1 passed local Windows mainline tests and real-sample checks; remote CI, macOS, Win7 builds, and physical Windows 7 SP1 x64 acceptance remain pending. Both Windows installers are unsigned and may trigger SmartScreen.
 
 ### Choose a macOS build
 
-- **Apple Silicon (M1 or newer):** use `FlyingMouse.Format-Setup-0.7.0-mac-arm64.dmg`.
-- **Intel Mac:** use `FlyingMouse.Format-Setup-0.7.0-mac-x64.dmg`.
+- **Apple Silicon (M1 or newer):** use `FlyingMouse.Format-Setup-0.7.1-mac-arm64.dmg`.
+- **Intel Mac:** use `FlyingMouse.Format-Setup-0.7.1-mac-x64.dmg`.
 
-The first macOS packages support macOS 11 or newer and are unsigned and unnotarized, so Gatekeeper may warn. Both architectures passed pinned-engine, full-conversion, bundle, and 12-second launch gates on native GitHub runners; physical Mac acceptance remains pending.
+macOS builds target macOS 11 or newer and are unsigned and unnotarized, so Gatekeeper may warn. Historical native GitHub runner results do not validate this candidate: neither macOS architecture has been built or tested for 0.7.1, and physical Mac acceptance remains pending.
 
 The complete build requires only:
 

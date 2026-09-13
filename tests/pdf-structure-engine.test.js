@@ -9,6 +9,9 @@ const { test } = require("node:test");
 const {
   DEFAULT_MAX_BUFFER_BYTES,
   DEFAULT_TIMEOUT_MS,
+  REQUIRED_MODELS,
+  getStructuredPdfAvailability,
+  preflightStructuredPdf,
   createStructuredPdfBoundary,
   withStructuredPdf
 } = require("../pdf-structure-engine");
@@ -35,8 +38,17 @@ async function createHarness(t) {
   // 否则 mac CI 会误报 ENGINE_MISSING 而非预期的 MODEL_MISSING（Windows 无此语义，无害）。
   await fsp.chmod(enginePath, 0o755);
   await fsp.mkdir(modelDirectory);
+  for (const name of REQUIRED_MODELS) {
+    const model = path.join(modelDirectory, name);
+    await fsp.mkdir(model);
+    for (const file of ["inference.json", "inference.pdiparams", "inference.yml"]) {
+      await fsp.writeFile(path.join(model, file), "test model");
+    }
+  }
   await fsp.mkdir(runtimeDir);
-  await fsp.writeFile(inputPath, "pdf");
+  const pdf = await require("pdf-lib").PDFDocument.create();
+  pdf.addPage([100, 100]);
+  await fsp.writeFile(inputPath, await pdf.save());
   return { enginePath, modelDirectory, inputPath, runtimeDir };
 }
 
@@ -116,7 +128,7 @@ test("injects a short timeout into a real direct child and cleans scratch", asyn
 });
 
 for (const [name, failure] of [
-  ["nonzero exit", Object.assign(new Error("private source text"), { code: 20, stderr: "secret OCR" })],
+  ["nonzero exit", Object.assign(new Error("private source text"), { code: 139, stderr: "secret OCR" })],
   ["timeout", Object.assign(new Error("timed out at private path"), { code: "ETIMEDOUT", killed: true })]
 ]) {
   test(`redacts ${name} failures`, async (t) => {
@@ -155,13 +167,100 @@ test("collapses engine exit status and output without retaining a cause", async 
   await assert.rejects(
     withStructuredPdf(harness.inputPath, options(harness, async () => { throw privateFailure; }), async () => {}),
     (error) => {
-      assert.equal(error.code, "PDF_STRUCTURE_PARSE_FAILED");
+      assert.equal(error.code, "PDF_STRUCTURE_RESOURCE_LIMIT");
       assert.equal(error.cause, undefined);
       assert.equal(error.status, undefined);
       assert.doesNotMatch(JSON.stringify(error), /private|recognized|23/);
       return true;
     }
   );
+});
+
+test("Lite availability and missing-engine guidance preserve the fallback error code", async (t) => {
+  const harness = await createHarness(t);
+  await fsp.rm(harness.enginePath);
+  assert.equal((await getStructuredPdfAvailability({ ...harness, engineProfile: "lite" })).profile, "lite");
+  assert.equal((await getStructuredPdfAvailability({ ...harness, engineProfile: "full" })).profile, undefined);
+  await assert.rejects(withStructuredPdf(harness.inputPath, { ...harness, engineProfile: "lite" }, async () => {}), (error) => {
+    assert.equal(error.code, "PDF_STRUCTURE_ENGINE_MISSING");
+    assert.match(error.messages.zhCN, /轻量版.*完整版/u);
+    assert.match(error.messages.enUS, /Lite.*Full/u);
+    return true;
+  });
+});
+
+test("reports native model, resource, output and launch failures without stderr", async (t) => {
+  const harness = await createHarness(t);
+  for (const [code, expected] of [[20, "PDF_STRUCTURE_MODEL_MISSING"],
+    [23, "PDF_STRUCTURE_RESOURCE_LIMIT"], [22, "PDF_STRUCTURE_SCHEMA_INVALID"],
+    [21, "PDF_STRUCTURE_PARSE_FAILED"], ["ENOENT", "PDF_STRUCTURE_ENGINE_MISSING"]]) {
+    const failure = Object.assign(new Error("private"), { code, stderr: "private OCR\nMODEL_MISSING" });
+    await expectCode(withStructuredPdf(harness.inputPath, options(harness, async () => { throw failure; }), async () => {}), expected);
+  }
+});
+
+test("empty and truncated models are unavailable before any expensive process starts", async (t) => {
+  const harness = await createHarness(t);
+  assert.equal((await getStructuredPdfAvailability(harness)).enabled, true);
+  await fsp.writeFile(path.join(harness.modelDirectory, "text_detection", "inference.pdiparams"), "");
+  const availability = await getStructuredPdfAvailability(harness);
+  assert.equal(availability.enabled, false);
+  assert.equal(availability.errorCode, "PDF_STRUCTURE_MODEL_MISSING");
+  assert.equal(availability.limits.maxTotalPixels, 100000000);
+  assert.doesNotMatch(JSON.stringify(availability), /fm-engine-test-/);
+  let called = false;
+  await expectCode(withStructuredPdf(harness.inputPath, options(harness, async () => { called = true; }), async () => {}), "PDF_STRUCTURE_MODEL_MISSING");
+  assert.equal(called, false);
+});
+
+test("an empty engine executable is unavailable", async (t) => {
+  const harness = await createHarness(t);
+  await fsp.writeFile(harness.enginePath, "");
+  assert.equal((await getStructuredPdfAvailability(harness)).errorCode, "PDF_STRUCTURE_ENGINE_MISSING");
+});
+
+test("an oversized manifest is rejected before reading it into memory", async (t) => {
+  const harness = await createHarness(t);
+  let manifestRead = false;
+  const boundary = createStructuredPdfBoundary({ fileSystem: {
+    ...fsp,
+    async lstat(file) {
+      const stats = await fsp.lstat(file);
+      if (path.basename(file) === "manifest.json") stats.size = 512 * 1024 * 1024 + 1;
+      return stats;
+    },
+    async readFile(file, ...args) {
+      if (path.basename(file) === "manifest.json") manifestRead = true;
+      return fsp.readFile(file, ...args);
+    }
+  } });
+  await expectCode(boundary(harness.inputPath, options(harness, async (_file, args) => {
+    await fsp.writeFile(path.join(args[4], "manifest.json"), "{}");
+  }), async () => {}), "PDF_STRUCTURE_RESOURCE_LIMIT");
+  assert.equal(manifestRead, false);
+});
+
+test("model-map escapes and missing inference graphs are rejected", async (t) => {
+  const harness = await createHarness(t);
+  await fsp.writeFile(path.join(harness.modelDirectory, "model-map.json"), JSON.stringify({ text_detection: "../private" }));
+  assert.equal((await getStructuredPdfAvailability(harness)).errorCode, "PDF_STRUCTURE_MODEL_MISSING");
+  await fsp.rm(path.join(harness.modelDirectory, "model-map.json"));
+  await fsp.rename(path.join(harness.modelDirectory, "text_detection", "inference.json"), path.join(harness.modelDirectory, "text_detection", "inference.pdmodel"));
+  assert.equal((await getStructuredPdfAvailability(harness)).enabled, true);
+  await fsp.rm(path.join(harness.modelDirectory, "text_detection", "inference.pdmodel"));
+  assert.equal((await getStructuredPdfAvailability(harness)).enabled, false);
+});
+
+test("501 pages and cumulative raster budget fail before native launch", async (t) => {
+  const harness = await createHarness(t);
+  for (const [pages, size] of [[501, [10, 10]], [51, [595, 842]]]) {
+    const pdf = await require("pdf-lib").PDFDocument.create();
+    for (let number = 0; number < pages; number += 1) pdf.addPage(size);
+    await fsp.writeFile(harness.inputPath, await pdf.save());
+    let called = false;
+    await expectCode(withStructuredPdf(harness.inputPath, options(harness, async () => { called = true; }), async () => {}), "PDF_STRUCTURE_RESOURCE_LIMIT");
+    assert.equal(called, false);
+  }
 });
 
 test("production defaults fail closed when no engine is configured", async () => {

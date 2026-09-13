@@ -12,6 +12,7 @@ const { RUNTIME_DIR, LIBREOFFICE_PATH } = require("./config");
 const { normalizeExt, extFromName, outputNameFor } = require("./utils");
 const { createTurndownService } = require("./text-conversion");
 const { OfficeEngineError, runLibreOffice } = require("./office-engine");
+const { waitForOfficeReady } = require("./office-readiness");
 // 注意：htmlToText 从 text-docx.js 延迟 require（convertDocumentToText 内），
 // 避免与 text-docx.js 顶层 require 本模块形成循环依赖。
 const sanitize = require("sanitize-filename");
@@ -107,6 +108,7 @@ async function docxNeedsPdfRepair(docxPath) {
 }
 
 async function repairDocxViaRoundtrip(inputPath, originalName, tempDir) {
+  await waitForOfficeReady();
   const repairDir = path.join(tempDir, "repair");
   await fsp.mkdir(repairDir, { recursive: true });
   const args = [
@@ -217,6 +219,7 @@ async function findConvertedFile(outDir, target) {
 }
 
 async function convertWithLibreOffice(inputPath, outputPath, originalName, target) {
+  await waitForOfficeReady();
   const tempDir = path.join(RUNTIME_DIR, `lo-${randomUUID()}`);
   const outDir = path.join(tempDir, "out");
   await fsp.mkdir(outDir, { recursive: true });

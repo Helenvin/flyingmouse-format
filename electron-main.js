@@ -4,6 +4,7 @@ const os = require("os");
 const { app, BrowserWindow, shell, ipcMain, dialog } = require("electron");
 const saveDownload = require("./save-download");
 const storeEngineCache = require("./store-engine-cache");
+const officeReadiness = require("./office-readiness");
 const { saveConvertedResult } = require("./save-converted-result");
 const {
   isTrustedRendererUrl,
@@ -85,24 +86,29 @@ ipcMain.handle("get-app-version", (event) => {
 // "installation could not be completed". Copy the engine bundle once to a writable
 // per-user location and run from there. Dev / non-Store installs already run from a
 // writable resources dir, so they skip this entirely.
-// P3（2026-09-10 复核）：完整流程（staging 复制 → 打包期清单校验 → 真实最小转换
-// 冒烟 → rename 发布 → 回收旧缓存）在 store-engine-cache.js，可脱离 electron 单测。
-// 失败回退 bundled 路径的语义维持 0.6.9（fail-soft，能力检测会如实报引擎状态）。
-function ensureWritableLibreOfficeForStore(bundledSofficePath) {
+// Select the eventual writable path before config/server modules are loaded.
+// Copy and validation run in a worker after the window is created; the server
+// advertises a pending Office engine and awaits readiness only for Office work.
+function configureWritableLibreOfficeForStore(bundledSofficePath) {
   const localAppData = process.env.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local");
   const enginesRoot = path.join(localAppData, "FlyingMouseFormat", "engines");
-  const versionTag = String(app.getVersion() || "unknown").replace(/[^0-9A-Za-z._-]/g, "_");
-  const result = storeEngineCache.prepareWritableEngineBundle({
+  const options = {
     bundledBundle: path.join(process.resourcesPath || "", "libreoffice"),
     bundledSofficePath,
     enginesRoot,
-    bundleName: `libreoffice-${versionTag}`,
     log
+  };
+  const destination = storeEngineCache.resolveWritableEngineBundle(options);
+  officeReadiness.configureOfficePreparation({
+    path: destination.path,
+    prepare: async () => {
+      const result = await storeEngineCache.prepareWritableEngineBundleAsync({ ...options, bundleName: destination.bundleName });
+      if (result.source === "bundled") log(`Writable Office engine unavailable: ${result.reason}`);
+      else log(`Writable Office engine ready (${result.source}): ${result.path}`);
+      return result;
+    }
   });
-  if (result.source === "bundled" && result.reason) {
-    log(`Writable engine cache unavailable: ${result.reason}`);
-  }
-  return result.path;
+  return destination.path;
 }
 
 function configureRuntime() {
@@ -115,7 +121,7 @@ function configureRuntime() {
   process.env.FLYINGMOUSE_FFMPEG_PATH = runtimePaths.ffmpeg;
   if (process.windowsStore) {
     // Store/MSIX install dir is read-only; LibreOfficePortable can't initialize there.
-    process.env.FLYINGMOUSE_LIBREOFFICE_PATH = ensureWritableLibreOfficeForStore(runtimePaths.libreoffice);
+    process.env.FLYINGMOUSE_LIBREOFFICE_PATH = configureWritableLibreOfficeForStore(runtimePaths.libreoffice);
   } else {
     process.env.FLYINGMOUSE_LIBREOFFICE_PATH = runtimePaths.libreoffice;
   }
@@ -162,6 +168,9 @@ async function boot() {
   console.log(`FlyingMouse Format started at ${started.url}`);
   log(`Server started at ${started.url}`);
   createWindow(started.url);
+  // Worker-based preparation allows both rendering and non-Office conversion
+  // while a first Store launch copies and validates the engine.
+  void officeReadiness.startOfficePreparation();
 }
 
 function bundledSkillSource() {
@@ -406,6 +415,7 @@ process.on("unhandledRejection", (error) => log("Unhandled rejection", error));
 if (cliMode) {
   app.whenReady().then(async () => {
     configureRuntime();
+    void officeReadiness.startOfficePreparation();
     const { runCli } = require("./cli");
     const code = await runCli(process.argv.slice(cliMarkerIndex + 1));
     app.exit(code);
@@ -418,6 +428,8 @@ if (cliMode) {
   app.whenReady().then(boot).catch((error) => {
     log("Boot failed", error);
     console.error(error);
+    dialog.showErrorBox("飞鼠格式启动失败 / FlyingMouse Format could not start",
+      `应用未能启动，请保留以下日志并检查安装是否完整。\nThe app could not start. Keep this log and check that installation completed.\n\n${logger.getLogFile()}\n\n${error?.message || error}`);
     app.quit();
   });
 }

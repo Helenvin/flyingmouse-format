@@ -20,7 +20,7 @@ if (!process.env.FLYINGMOUSE_FORMAT_BASE_URL) {
 const serverModule = process.env.FLYINGMOUSE_FORMAT_BASE_URL ? null : require("../server");
 const FFMPEG_BIN = process.env.FLYINGMOUSE_FFMPEG_PATH
   || path.join(__dirname, "..", "bin", "ffmpeg", "ffmpeg.exe");
-const { QPDF_PATH, LIBREOFFICE_PATH } = require("../config");
+const { QPDF_PATH, LIBREOFFICE_PATH, DOCSTRUCTURE_ENGINE_PATH } = require("../config");
 const qpdfAvailable = (() => {
   try {
     execFileSync(QPDF_PATH, ["--version"], { timeout: 5000, windowsHide: true });
@@ -29,9 +29,7 @@ const qpdfAvailable = (() => {
     return false;
   }
 })();
-const structuredEnginePresent = fs.existsSync(
-  path.join(__dirname, "..", "bin", "docstructure", "docstructure-engine.exe")
-);
+const structuredEnginePresent = Boolean(DOCSTRUCTURE_ENGINE_PATH && fs.existsSync(DOCSTRUCTURE_ENGINE_PATH));
 let server;
 let baseUrl;
 

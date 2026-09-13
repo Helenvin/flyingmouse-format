@@ -4,7 +4,7 @@
 
 FlyingMouse Format（飞鼠格式）是 Windows Electron 离线文件转换器。主产品必须使用原版鼠鼠 UI；它与“鼠鼠打印”是两个独立项目，禁止跨项目修改或混合发布物。
 
-当前主线：Electron 43、Windows 10/11 x64、鼠鼠 UI、中英文切换、批量转换、按源格式记忆目标格式、保存目录记忆、PDF→Word 版式还原（docengine）、PDF→Excel 表格提取（camelot）、视频编码选择（H.264/H.265/AV1）、OFD→PDF（ofd-convert.js，@miconvert/ofd-to-pdf，仅支持转 PDF 不走 LibreOffice）。Windows 7 SP1 x64 只通过独立 staging 派生 Electron 22.3.27 兼容包，禁止降低根 manifest 的主线依赖。
+当前技术栈：Electron 43、Windows 10/11 x64、鼠鼠 UI、中英文切换、批量转换、偏好与保存目录记忆。PDF 按原生/扫描内容分流，见 [架构](docs/ARCHITECTURE.md)；OFD 仅通过 `ofd-convert.js` 转 PDF，不走 LibreOffice。Windows 7 SP1 x64 只通过独立 staging 派生 Electron 22.3.27，禁止降低根 manifest 的主线依赖。当前候选与发布状态以 [0.7.1 修复说明](docs/REPAIR-0.7.1.md) 为准，不能从源码版本推断已安装或已发布版本。
 
 ## Source map
 
@@ -16,6 +16,8 @@ FlyingMouse Format（飞鼠格式）是 Windows Electron 离线文件转换器�
 - `public/i18n.js`：`zh-CN` / `en-US` 语言状态与持久化。
 - `public/conversion-preferences.js`：按规范化源扩展名记忆目标格式。
 - `settings-store.js`：在 Electron `userData/settings.json` 中原子保存最近目录。
+- `office-readiness.js`、`store-engine-cache.js`、`store-engine-worker.js`：Office 准备状态、Store 可写缓存与后台验证。
+- `ocr.js`、`subtitles.js`：带质量/方向诊断的 OCR、多页 TIFF 和字幕时间轴转换。
 - `resource-policy.js`：统一图片、批量、PDF 与 OCR 资源上限和稳定错误码。
 - `text-conversion.js`：统一 ATX/Fenced Turndown 与严格 CSV 解析。
 - `pdf-table-extractor.js` / `pdf-table-runtime.js`：复杂 PDF 表格几何识别、OCR 回退与工作簿模型。
@@ -42,12 +44,13 @@ FlyingMouse Format（飞鼠格式）是 Windows Electron 离线文件转换器�
 
 ## Conversion boundaries
 
-- PDF → XLSX 是“智能表格提取”：优先 PDF.js 电子文字坐标，无有效文字时使用 Poppler + Tesseract blocks；支持有框/无框、多表、跨页续接、旋转、合并区域、低置信批注与 Raw 回退，但扫描件和复杂排版仍可能不完整。
-- PDF → DOCX 优先用内置 docengine 引擎（spawn `bin/docengine/docengine.exe`，pdf2docx 打包）做版式还原（段落/表格/图片/字体）；引擎缺失或转换失败时回退到 PDF.js 文字提取。Windows 7 版不含该引擎（Python 3.12 不支持 Win7），始终回退文字提取；macOS 版同样不含（darwin 引擎仅 runtime/libreoffice/tessdata）。
+- PDF → DOCX/XLSX 先由 `pdf-classifier.js` 分类；扫描/混合页尝试 `docstructure`。DOCX 仅在 `pdf.js` 允许的错误码下回退 OCR 段落并提示版式损失；扫描 XLSX 不伪造成功或输出空表。
+- 原生 PDF → DOCX 优先 `docengine` 并检查内容完整性，失败回退 PDF.js/OCR；原生 PDF → XLSX 使用 `pdf-table-extractor.js` 的文字坐标/表格模型。轻量版、Win7、macOS 的可用引擎不同，必须按能力检测呈现目标与降级说明。
 - HTML / Office → Markdown 必须共用 ATX 标题、fenced 代码块的 Turndown helper；CSV 使用锁定的 `csv-parse 7.0.2`（修复已知原型处理问题），禁止退回按换行拆分的简易解析器。
-- 资源上限固定为：单图 50MP、单边 16384px、图片合并 PDF 总解码量 100MP、批量选择 2GB、PDF 不限页数（1:1 还原）、OCR 不限页数；Sharp 不得使用无约束 `limitInputPixels: false`。
+- 资源说明必须对应实现：普通图片/批量限制当前由 `resource-policy.js` 的 `LIMITS` 决定（现为 `Number.MAX_SAFE_INTEGER` 占位，不能宣称固定 50MP/2GB 防护）；高级结构识别使用 `STRUCTURED_PDF_LIMITS` 与 Python `DEFAULT_LIMITS`，含 500 页、单页 50MP、累计 100MP（144 DPI）。不得宣称无限制或保证任意文件 1:1 还原；Sharp 不得使用 `limitInputPixels: false`。
 - PDF → PNG/JPG 使用 Poppler，并因多页输出 ZIP。
-- 图片或扫描 PDF → TXT 使用 Tesseract OCR。
+- 图片或扫描 PDF → TXT 使用 Tesseract OCR；图片 DOCX/Markdown 与 PDF Markdown 需传递质量和重排版式提示。多页 TIFF 必须逐页识别，动画仅识别首帧时明确提示。
+- SRT/VTT/ASS/SSA 互转及 TXT 导出保留时间轴和 Unicode；样式/位置/精度损失要提示，不能静默丢弃无法表示的绘图或事件。
 - 音频源不得暴露 MP4/WebM/MKV/MOV 等视频容器目标。
 - 音频仅支持普通格式（MP3/WAV/FLAC/AAC/OGG/OPUS/WMA），不支持任何音乐平台加密特殊格式（DRM 规避法律风险，公开版已移除解锁模块，见 docs/分发与合规规范.md）。
 
@@ -83,6 +86,8 @@ npm test
 npm run test:ci
 npm audit --omit=dev
 npm run dist
+npm run dist:lite
+npm run dist:appx
 node scripts/build-win7.js --prepare-only
 npm run dist:win7
 node scripts/inspect-pe.js "output/win7-stage/dist/win-unpacked/FlyingMouse Format.exe"
@@ -91,25 +96,24 @@ npm audit --omit=dev --prefix output\win7-stage
 
 沙箱限制 Node 子进程时可能出现 `spawn EPERM`；这不是转换代码失败。真实转换测试和打包应在普通 Windows PowerShell、cmd 或 CI 中运行。
 
-完整本地测试依赖 `bin/` 引擎。Release workflow 会按 `ci-engines-v1.json` 校验 SHA-256、缓存并恢复固定引擎资产，执行 `npm test`、审计和标准/Win7 双构建，最后由 publish job 在云端自动创建 GitHub Release 并上传资产（本地不用下载 artifacts）；普通 CI 仍运行 `npm run test:ci`。
+完整本地测试依赖外置引擎。`.github/workflows/ci.yml` 在 main push 或 PR 时恢复锁定引擎并运行 `npm test`；普通修复分支 push 不触发。`release.yml` 在 `v*` 标签或手动 dispatch 时进入构建/发布流程。引擎资产必须同时匹配 `ci-engines-v1.json` 与原生引擎锁；不要跳过锁校验。
 
 ## Packaging and release
 
 - `build.files` 是显式白名单；新增被服务端引用的根目录 JS 模块时必须同步加入。
-- `extraResources` 必须包含 FFmpeg、AVS3、LibreOffice、Poppler、tessdata、Tesseract core 和 docengine（PDF→Word/Excel 文档引擎，Windows 标准版专用；win7 版与 macOS 排除，回退纯 JS）。
+- Windows 完整版按 `package.json` 打包 FFmpeg、AVS3、LibreOffice、Poppler、tessdata、Pandoc、docengine 和 docstructure 等引擎；`windows-lite-profile.js` 仅移除高级 docstructure。Windows OCR core 保留在 `app.asar.unpacked/node_modules/tesseract.js-core`，不得另加一份重复资源；macOS 资源由自己的配置定义。
 - 保持 `signExecutable: false`，不要使用 `signAndEditExecutable: false`，后者会跳过图标嵌入。
 - `npm run dist` 当前生成 NSIS 安装包和 `dist/win-unpacked`；不要假设 APPX 已同步生成。
 - Microsoft Store 使用同一鼠鼠 UI 源码单独构建的 Windows 10/11 x64 APPX/MSIX；不得上传 NSIS，也不得提交 Win7 Legacy 包。上传前必须校验 Identity、Publisher、版本、架构、包内模块、鼠鼠图标和 SHA-256。
 - Partner Center 的“包验证通过”“认证通过”“公开发布”是不同状态；外部状态只能按现场回读结果和绝对日期记录，不能由本地构建或上传成功推断。
-- **商店 MSIX 两个代码级坑（2026-08-28 修复，commit 468d7db，勿回退）**：
-  - Settings 原子写：Store AppContainer 把 `%APPDATA%\Roaming` 重定向到 `AppData\Local\Packages`，`fs.rename` 跨此边界抛 `EXDEV`（装完即“用不了”）。`writeSettings` 必须对 `EXDEV` 降级为 `copyFile + rm`；同卷仍保留原子 `rename`。见 skill flyingmouse-format `references/settings-exdev-cross-device-rename.md`。
-  - LibreOffice 引擎：Store 装在只读 `WindowsApps`，LibreOfficePortable 无法在只读安装目录初始化（“安装无法完成”→ Word/Excel/PPT→PDF 失效）。`process.windowsStore` 为真时把引擎一次性复制到 `%LOCALAPPDATA%\FlyingMouseFormat\engines\libreoffice` 并改指 `FLYINGMOUSE_LIBREOFFICE_PATH`；非商店版零开销。见 `references/libreoffice-msix-readonly-install.md`。
-  - 改了 app 代码后**必须整体重建 win-unpacked**（electron-builder 把 `app.asar` 完整性哈希烧进 exe），不能只外科替换 asar；signed 包需重签名。见 `references/appx-rebuild-and-store-upload.md`。
+- Store settings 写入必须保留 `settings-store.js` 的 `EXDEV` 跨卷回退，同卷仍用原子 rename。
+- Store Office 缓存位于 `%LOCALAPPDATA%\FlyingMouseFormat\engines\libreoffice-<内容标识>`；先显示窗口，再在 Worker 复制、校验与验证。只有 Office 任务等待，失败要可诊断；仅复用与内容及验证收据相符的缓存。见 [架构](docs/ARCHITECTURE.md)。
+- 改动包内内容后必须整体重建 EXE 与 ASAR（完整性哈希绑定），不能只替换 ASAR；签名包需重签名。源码说明更新不等于现有安装包已重建。见 [发布流程](docs/RELEASE.md)。
 - 发布前必须检查：完整测试、真实 AV3A 样本、`npm audit --omit=dev`、ASAR 文件、引擎资源、EXE 产品版本、安装包 SHA-256、鼠鼠内嵌图标、桌面快捷方式、GitHub 资产摘要。
 - `dist/win-unpacked` 是本机开发/验收入口；公开交付使用 Release 安装包。
 - Win7 构建只允许使用 Node.js 18–22（推荐 22 LTS）和专用 `win7-package-lock.json` 经 `npm ci` 重建 `output/win7-stage/`；子进程必须绑定当前 Node，源码复制须兼容 Unicode 路径。产物写入精确的 `dist/FlyingMouse Format-Setup-<version>-win7-x64.exe`；脚本必须锁定 staging manifest/lockfile，校验本地 builder 与 `extraResources` 各自在允许根目录内的 canonical containment 并拒绝 reparse point；测试可以清理 staging，不得覆盖标准安装包或移动既有版本标签。
 - Windows 7 发布证据必须同时记录：主线测试、staging 测试、内层 EXE PE 5.2、当前系统冒烟、旧依赖审计及“真实 Win7 设备待验收”。
-- Win7 staging 测试只运行能在 staging 内自洽执行的 90 项；根专属真实引擎/打包管线测试由主线执行，不得把根测试文件复制进 staging 后制造假失败。
+- Win7 staging 测试由 `win7-build-profile.js` 过滤出能在 staging 自洽运行的文件；数量以当次日志为准。根专属真实引擎/打包管线测试由主线执行，不能把历史测试数量当成当前验收。
 - GitHub remote：`https://github.com/LaoFeng-mouse/flyingmouse-format.git`。
 
 ## Documentation map
@@ -117,7 +121,7 @@ npm audit --omit=dev --prefix output\win7-stage
 - `README.md`：面向用户的中英文介绍、下载与格式范围。
 - `docs/ARCHITECTURE.md`：运行架构、状态和数据边界。
 - `docs/RELEASE.md`：本机测试、打包、桌面同步与 GitHub 发布清单。
-- `docs/HANDOFF.md`：当前可交接状态和剩余风险。
+- `docs/HANDOFF.md`：恢复工作入口；候选状态与剩余风险指向 `docs/REPAIR-0.7.1.md`。
 - `docs/privacy-policy.html`：面向用户和 Microsoft Store 的隐私政策。
 - `docs/微软商店上架清单.md`、`docs/上架材料包.md`：商店渠道资料；外部审核状态必须写绝对日期并注明是否已现场复核。
 
@@ -126,4 +130,4 @@ npm audit --omit=dev --prefix output\win7-stage
 - 作者：牢蜂（LaoFeng）。所有公开发布物（README、Release、安装包、UI、诊断文件、商店材料）必须保留作者署名。
 - 许可证为非商用：禁止销售、转卖、收费服务、电商平台倒卖、套壳换皮重新发布。LICENSE 已从 MIT 更换为非商用许可。
 - 任何界面文案/文档新增作者信息时：作者=牢蜂，禁止商用表述为「仅供个人免费使用，禁止商业售卖/转卖/套壳」。
-- 包内版本号、README 版本号、release notes、package-lock/win7-package-lock 版本号必须与 package.json 同步，发版前逐一核对。
+- 包内版本号、README 当前版本、当次 release notes、package-lock/win7-package-lock 必须与 package.json 同步；历史 release notes 保留所属版本，不能机械替换。发版前逐一核对。

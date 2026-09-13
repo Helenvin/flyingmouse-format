@@ -1,137 +1,33 @@
 # FlyingMouse Format 交接
 
-## 当前工作：0.7.0（2026-09-10）
+当前工作入口是 [0.7.1 修复与验收记录](REPAIR-0.7.1.md)。提交与远程同步、最终安装包、验证账本、实际安装版本、远程引擎差异和未完成发布门禁均以该文档及其证据为准，本页不复制一份状态清单。
 
-0.7.0 修复范围与证据以 `docs/release-notes-070.md`、`docs/audit-070-fixes.md` 为准。`package.json`、两个 lockfile 和 README 已同步 0.7.0。使用 `npm run restore:pandoc` 恢复固定引擎，beforePack 自动生成 LibreOffice 完整性清单；`scripts/build-appx.ps1` 整体构建 Electron、创建独立布局并验证未签名 Store APPX 0.7.0.0。最终产物和 Git 同步状态在交付报告中记录；本文不代表已提交微软商店。
+## 继续任务前
 
-下方为历史交接记录，版本、待办和“全部修复”等结论保留其原日期，不代表 0.7.0 当前状态。
+1. 阅读根 [AGENTS.md](../AGENTS.md)、修复记录和当前工作区差异，确认所在分支、提交以及并行任务的文件归属。不要依据旧交接中的路径或“待办”覆盖其他工作树。
+2. 按问题读取 [架构说明](ARCHITECTURE.md) 中的转换路由和失败边界，再检查源码。轻量 OCR、原生 PDF 表格与高级扫描结构识别的能力不同；模型目录存在也不代表引擎完整。
+3. 构建或发布前阅读 [发布流程](RELEASE.md)，重新核对引擎清单与锁。0.7.1 本地结构引擎和旧远程 CI 资产的差异属于明确前置条件，不能通过删除校验解决。
+4. 区分“修复分支已推送”“安装包已校验”“桌面程序已升级”及“商店已公开”。继续安装、合并、标签、发布或清理操作时沿用本任务的授权边界，并验证目标状态；文档中的命令不是额外授权。
 
----
+## 维护约定
 
-更新时间：2026-09-10（复核遗留 P1-P5 修复完成，分支 fix/0.6.10-save-safety 待提交/PR/重打 appx）
+- 引擎路径使用 `config.js`、平台运行时配置和 `FLYINGMOUSE_*` 环境变量解析。旧交接里的 D1/D2、其他机器路径及旧构建目录不是可直接复用的运行配置。
+- 大型模型、引擎、构建暂存和证据可以放在任务专用磁盘目录。未进 Git 的文件可能是唯一复现材料或构建依赖；不因目录旧、磁盘大或安装包已有新版就自动删除。
+- 修改运行代码必须整体重建 EXE/ASAR；同时检查 `build.files` 白名单。文档整理不改变已验证运行代码或把旧程序视为新版本。
+- 发布版使用项目约定的鼠鼠图标和署名；特殊音乐平台格式的旧记录不表示公开版提供该能力。飞鼠格式与鼠鼠打印保持独立。
 
-## 2026-09-10（晚）：复核遗留 P1-P5 全部修复（分支 fix/0.6.10-save-safety，版本已 bump 0.6.10）
+## 历史检索
 
-- **范围**：对 0.6.9（f05c0b9）代码复核的 5 项遗留逐项修复，详见 `docs/release-notes-0.6.10.md`。工作目录 `D:\项目\飞鼠格式-fix-0.6.9`（worktree，分支 fix/0.6.10-save-safety，基于 main f05c0b9）。
-- **P1** 下载落盘抽出 `save-download.js`：`.partial` 临时文件收全+校验后才 rename 发布，失败只清临时文件，destination 永不 rm（tests/save-download.test.js 7/7 + 新旧对照复现）。
-- **P2** `public/app.js` 统一 `persistSettings()`：内存先行、UI 更新、尽力持久化、失败一次性非阻断警告；两处迁移降级带 legacy.language（tests/settings-degrade-ui.test.js 5/5 静态守卫）。
-- **P3** 新 `store-engine-cache.js`：staging 复制 → 构建期清单（`scripts/build-engine-manifest.js`，48 关键文件，≤5MB 记 sha256）校验 → 真实 CSV→PDF 冒烟 → rename 发布 → 发布后才回收旧缓存；源包残缺永不发布、绝不动可用旧缓存（tests/store-engine-cache.test.js 7/7，含真实引擎冒烟，本机借用满血版 resources 引擎 ~9s）。
-- **P4** `settings-store.js` `withSettingsLock` 队列清理：`queued` 同一对象比较 + `_mutationChainsSize()` 探针（tests/settings-store.test.js 8/8）。
-- **P5** `scripts/release-version-sync.js` 两阶段原子化：读全校验+内存生成（零写）→ 写盘、中途失败回滚（tests/release-version-sync-atomic.test.js 4/4）。
-- **全量测试**：519 例 = 477 过 / 30 败；30 败与改动前基线逐条一致（worktree bin/ 缺引擎，ffmpeg/pdftoppm ENOENT，`git stash -u` 对照证实非本批引入）。新根 .js 已登记 build.files；新测试已进 test 与 test:ci 两处。
-- **待办（下一窗口）**：
-  - ① 提交本分支 → push → PR → main（受 ruleset 保护走 PR squash 合并）→ 盯 CI 绿。
-  - ② appx 重打：`D:\appx-build` worktree 同步 main → 恢复引擎后 `node scripts/build-engine-manifest.js` 生成 `engine-integrity.json` 随包 → `--win dir` 重打（删 app-update.yml；staging 备份绝不放 `__appx-manual/` 内）→ manifest 版本 `0.6.10.0` → rename-opc / PE 悬空扫描 / makeappx / check-appx 全链 → 交付 `D:\飞鼠打包\FlyingMouseFormat-0.6.10-x64.appx`。
-  - ③ GitHub tag/release 与 Partner Center 上传仍由用户本人操作（0.6.9 tag 仍未建，见下节②）。
-- **已知取舍**：P3 首启同步等待（慢盘首启更长）保持 0.6.9 同时机不引入竞态，体感优化另行立项。
+下列入口用于追溯机制的由来。其版本号、测试计数、CI、安装路径、商店状态和当时待办仅适用于原记录日期。
 
-## 2026-09-10：PR #71 squash 合并（main f05c0b9）+ 0.6.9 商店 appx 打包交付
+| 历史主题 | 检索入口 |
+| --- | --- |
+| 0.7.0 PDF/Markdown 正文、公式、Office 和保存修复 | [发布说明](release-notes-070.md)、[验收边界](audit-070-fixes.md) |
+| 0.6.10 保存安全、设置降级和 Store 引擎缓存完整性 | [发布说明](release-notes-0.6.10.md) |
+| 0.6.9 稳定性与能力门禁 | [发布说明](release-notes-069.md) |
+| 0.6.4 Word 自动编号 | [发布说明](release-notes-064.md) |
+| 0.6.2 Word→Markdown 图片外置 | [发布说明](release-notes-062.md) |
+| 0.6.1 PDF 引擎与公开格式边界 | [发布说明](release-notes-061.md) |
+| 更早构建、商店故障和逐次交接 | `git log -- docs/HANDOFF.md docs/RELEASE.md`，以及对应版本文档 |
 
-- **合并与门禁**：PR #71（0.6.9 稳定性修复 S1-S3/L1-L3）`gh pr merge 71 --squash` → main `f05c0b9`；合并后 push run `34441466609` **success**（3m59s）——Run162 以来的连续红终结。
-- **D:\appx-build 同步**：fast-forward dd68899→f05c0b9 干净；package-lock 有变 → `npm ci --cache D:\appx-cache\npm-cache --registry=npmmirror` 482 包 flat 布局（无 `.pnpm`，勿用 pnpm——pdfjs 守卫见 store-worktree ref §1）。
-- **打包链**：`npx electron-builder --win dir` EXIT=0；asar 内 package.json=0.6.9（脚本核验）；无 app-update.yml 残留；manifest 0.6.8.0→0.6.9.0；rename-opc 4 文件→保留名 0；scan-pe-cert-dangling bin 与 staging 均 0。
-- **交付物**：`D:\飞鼠打包\FlyingMouseFormat-0.6.9-x64.appx`（2,136,906,857 B），check-appx 全绿：zip OK、三根条目齐、**无 AppxSignature.p7x（未签名=正确交付形态）**、Identity `488B6338.354574AC174AD`/Publisher `CN=56D7A4A1-…`/Version `0.6.9.0`/PublisherDisplayName 牢蜂喜欢开飞机、**包内 app.asar SHA `e3074ad9…`==win-unpacked**。与 0.6.8 包条目数持平（21,108），唯一差异=sharp 原生库 0.35.3→0.35.4（随 lockfile，#71 audit fix 预期）。
-- **★新坑（已入 skill appx-msix-packaging）**：首打把旧 `app.bak-0.6.8` 留在 `dist/__appx-manual/` staging 内 → makeappx `/d` 无脑全收 → 4.27GB 双倍包（payload 行数 42,206 vs 21,105 识破）；备份必须放 `__appx-manual` 的兄弟目录，清空重打恢复 2.14GB。
-- **清场（用户已确认执行）**：`dist/old-app-0.6.8.bak`（~4G）与 0.6.8 旧 appx 已删；D 盘可用回升至 ~48G。
-- **08-28 遗留对账**：③ EXDEV/LibreOffice 修复已在 full-version（`D:\项目\飞鼠格式-src` settings-store.js 有 EXDEV 降级分支，实测确认）；④ main 已推送（f05c0b9）；① 0.6.5 appx 未单独上传，已被本 0.6.9 包取代（本机商店版仍 0.6.4.0）；② 商店实机验证并入下方新待办；⑤ tools/zstd/ 仍未跟踪未忽略（遗留）。
-- **待办（下一窗口）**：
-  - ① **上传 `D:\飞鼠打包\FlyingMouseFormat-0.6.9-x64.appx` 到 Partner Center——仅用户本人操作**。上传后本机用 0.6.4.0 商店包实测：Word→PDF 不再「安装无法完成」、settings 不再 EXDEV 崩、引擎版本化缓存重建。
-  - ② **GitHub v0.6.9 tag/release 未建**：main README 已写「下载 v0.6.9 安装包」，但 Releases Latest 仍是 v0.6.5（无 0.6.6~0.6.9 资产）——需决策是否 push tag `v0.6.9` 触发 release.yml 云端 Publish（NSIS+mac），否则 README 指向空资产。
-  - ③ fix worktree `D:\项目\飞鼠格式-fix-0.6.9` 与分支 `fix/0.6.9-capability-gates`（含 origin 远端分支）：内容已全部进 main（diff main 为空，squash 落地），用户确认后可清；其 bin/ 内残缺 avs3 占位目录为已知无害残留。
-  - ④ tools/zstd/ 入库还是忽略（承 08-28⑤）。
-
-## 2026-08-28：商店版 v0.6.5 appx 两处启动/转换崩溃修复
-
-- **背景**：商店版（Microsoft Store APPX，ID `9NJKN37CR6HJ`）用户反馈两个线上 bug——「装了=用不了」（启动即崩）与「微软商店下载的不能 word 转 pdf」。
-- **修复（main 分支，commit 468d7db，已提交未推送）**：
-  1. `settings-store.js`：Settings 原子写用 `fs.rename`，商店 AppContainer 把 `%APPDATA%\Roaming` 重定向进 `AppData\Local\Packages`，跨此边界抛 `EXDEV: cross-device link not permitted` → 启动即崩。改为 `EXDEV` 时降级 `copyFile + rm`，同卷仍原子 `rename`。
-  2. `electron-main.js`：Store 装在只读 `WindowsApps`，`LibreOfficePortable` 无法在只读安装目录初始化（“安装无法完成”）。`process.windowsStore` 为真时把引擎一次性复制到 `%LOCALAPPDATA%\FlyingMouseFormat\engines\libreoffice`，改指 `FLYINGMOUSE_LIBREOFFICE_PATH`；非商店版零开销。
-- **验证**：`node --check` 通过；`settings-store.test.js` 5/5；`electron-hardening-static.test.js` 24/24；PE 悬空证书 0（496 个）；包内 `app.asar` 与 win-unpacked 哈希一致（双修复进包）；zip 完整、未签名、版本 `0.6.5.0`、Identity `488B6338.354574AC174AD`。
-- **产物**：`C:\appx-build\dist\FlyingMouse Format-Setup-0.6.5-x64-final.appx`（≈1.99GB，**待上传本**）。
-- **遗留**：full-version（满血版，Documents\飞鼠格式）的 `settings-store.js` 仍是裸 `fsp.rename`（同样会触发 EXDEV）——待同步到满血版；该 worktree 正被并行编辑，勿动。
-
-## 待办（下一窗口，2026-08-28 更新）
-
-- ① 上传 `C:\appx-build\dist\FlyingMouse Format-Setup-0.6.5-x64-final.appx` 到 Partner Center（走直连绕代理，传完等“包验证通过”，此为本地构建与“公开发布”之间的中间状态）。成功后现场回读记录绝对日期。
-- ② 商店版实机验证：Word→PDF 不再弹“安装无法完成”、settings 不再 EXDEV 崩溃。
-- ③ EXDEV（+LibreOffice 只读）修复同步到 full-version（满血版）分支——该分支 settings-store.js 仍有裸 rename。
-- ④ main 未推送：`git push origin main`（468d7db）。
-- ⑤ `tools/zstd/`（zstd 1.5.5 win64 二进制）未跟踪：确认应入库还是忽略（CI 用 `zstd` 解压引擎，win64 为本地/Windows 用途）。
-
-## 2026-08-21：OFD→PDF 接入（@miconvert/ofd-to-pdf，纯 JS 链路）
-
-- **背景**：OFD（国标 GB/T 33190 开放版式文档）国内政企/税务/发票场景常见，LibreOffice 打不开。
-- **选型**：`@miconvert/ofd-to-pdf`（Apache-2.0，纯 JS 无原生依赖，离线可用；依赖 jszip/pdf-lib/fast-xml-parser 与项目现有重叠）。用真实样本实测：89 页扫描件类 OFD（DLTech21/ofd.js public/2.ofd）1.7s 转出合法 PDF，第 45 页 vision 验证中文清晰布局完整；30KB 标准测试文档 206ms 转出。
-- **实现**：新模块 `ofd-convert.js`（`convertOfdToPdf(input, output, originalName?)`，4 层校验 + 产出校验）；config.js `documentInput` 加 `ofd`（归文档类）+ `ofdOnlyPdfTargets`；utils.js `targetsForExt` 对 ofd 提前返回（只暴露 pdf+zip，防 LibreOffice 目标外泄）；server.js document 分支最前插 ofd 分支（multer 临时文件无扩展名，用 originalName 校验）；package.json build.files 白名单 + test/test:ci 脚本已同步。
-- **转出 PDF 后自动复用现有 PDF→图片/文字/Word 全链路**（选 pdf 为目标的收益）。
-- **测试**：新增 tests/ofd-convert.test.js 11 例全过——注册/类别/目标收敛（含 LO 可用时不外泄）/ 3 类非法输入 / 损坏 OFD 友好报错 / 真实夹具转出合法 PDF（5 页 82KB，%PDF 魔数 + pdf-lib 页数）/ 确定性（两次 SHA256 一致）/ capabilities 数据驱动带出 / HTTP 上传→转换→下载全链路 / OFD→docx 被 400 白名单拒绝。夹具 tests/fixtures/sample.ofd（999.ofd，29KB，本地自备不入库，缺失时 skip）。
-- **安全取舍（重要）**：npm audit 现报 2 个 moderate——fast-xml-parser 4.5.7（XMLBuilder 注释/CDATA 注入，无 4.x 修复版）。**已接受**：该库只用 XMLParser 解析方向，advisory 针对 XMLBuilder 写入（本项目不构建 XML），OFD 为本地用户文件无外部不可信输入；发版门禁卡高危。尝试过 package.json overrides 升 5.7.0：npm 对已有 lockfile 不重应用（实测确认），强制重装需删 lockfile 代价高，已放弃并移除 overrides 保持一致性。将来若升级 lockfile（npm ci 重装）可再试 overrides。
-- **待办（下一窗口）**：① 合规版 main 同步已完成（cherry-pick 00f7b31 + AGENTS.md 补写 cd1eacf，已推 origin/main，两端一致）；② 真实业务 OFD（税务发票等）实测；③ 若 overrides 可行再消 2 moderate。
-
-## 2026-08-21：docx→MD 自动编号注入加固（code-review 双轴审查 + 修复，cherry-pick 94e2aa4）
-
-- **背景**：对 746e3fd/5a68b08（范围 cd99b39..HEAD）做双轴代码审查（Standards + Spec 并行子代理），两轴独立收敛于同一结构弱点：编号注入用行级正则 `/^(#{1,6})\s+/` 在最终 md 上重认标题，对 fenced 代码块无感知。
-- **修复（office-convert.js）**：
-  1. 【硬伤】注入对 fenced 代码块无感知：围栏内 `#` 行被当标题注入并消耗对齐索引 → 围栏后编号整体错位。已抽纯函数 `injectHeadingPrefixes(markdown, prefixes)`（导出，可单测），加围栏状态机（``` 与 ```lang 均覆盖）。注：mammoth 1.12.0 实测无内置 pre 映射（"HTML Preformatted" 不产出 `<pre>`），当前管线产不出围栏——属防御性加固，单测锁定防将来任何 ``` 来源。
-  2. 【硬伤】含 `'` 样式名排除不一致：styleMap 生成排除（选择器语法限制）但编号计算不排除 → 两数组长度不一 → 编号整体错位。统一谓词 `isHeadingStyleName()`（两处共用）+ `parseDocxStyles()` 共享 styles.xml 解析（消除两份重复实现）。
-  3. 【硬伤】`%N` 展开统一用当前级 def.fmt → 混排格式错（如中文章号+decimal 节）。改为各级 %N 用各级自身 numFmt，引用未定义级别 decimal 兜底。
-  4. chineseCounting n=0（引用未激活级别）输出「十」→ 改「零」。
-  5. 死字段 `level` 移除（注入只消费 `.prefix`），`headingNumbers` 更名 `headingPrefixes`。
-- **测试**：conversion.test.js 新增 5 例（通用 docx 构造器 `createNumberedDocx` 共用，取代逐用例 yazl 复制）：① 引号样式名一致性（管线）② 混排 numFmt + 未激活级别「零」（管线）③ 手打编号防重复注入（管线）④ injectHeadingPrefixes 围栏跳过 + 对齐保持（单测，```/```lang 双形态）⑤ 手打守卫 + 前缀耗尽（单测）。full-version 全量 504 = 500 过 + 4 skip + 0 fail；main 全量见下方「当前状态·测试基线」。
-- **待办（下一窗口）**：① 本机现场验收（转 FreeRTOS docx 编号完整）② 客户机实测验收（main 同步已随本次完成）。
-
-## 2026-08-21（补充）：新格式接入核查 + PyMuPDF AGPL 合规（合规版文档同步）
-
-- **PyMuPDF AGPL-3.0**：docs/privacy-policy.html §3 第三方组件 + README License 段附许可说明与源码链接（docengine 含 PyMuPDF，按 AGPL 提供源码获取途径）。
-- **新格式接入核查（满血版，结果已记录在 full-version HANDOFF）**：mmp4 修复（musicex apiFilename 白名单补 mmp4/mflac2，抽 normalizeApiFilename 纯函数 + 6 断言单测）；KWM/mmp4/mgg2 部署验证（三处 asar md5 c938317a 均含 kwm-format×3/mmp4×2）。合规版按设计不含解锁格式，不受影响。
-
-## 当前状态
-
-- **版本**：v0.6.4（合规版，部分格式已下架）。GitHub Release 已发布：https://github.com/LaoFeng-mouse/flyingmouse-format/releases/tag/v0.6.4（Latest，6 资产：win x64 标准版 + win7 兼容版 + mac arm64/x64 DMG + blockmap + latest.yml；**v0.6.1/v0.6.2/v0.6.3 已删除**）。v0.6.4 = docx→MD WPS 自动编号恢复（第 X 章 / 1.1 / 1.1.1）
-- **main**：HEAD e11a6c4（39cb807 自动编号 cherry-pick + ea69e16 bump 0.6.4 + e11a6c4 lockfile 修复），已同步 origin/main；full-version 分支 = 满血版（含解锁模块，匿名，自留，桌面 zip e05398f5 版已重打，asar c938317a）
-- **CI**：v0.6.4 Release validation run 32371415753 全绿（mac arm64/x64 + validate-and-build + Publish 4 jobs）；门禁 ci.yml run 32363687947 全绿（3m30s）
-- **★lockfile 坑（v0.6.4 CI 卡住根因，已修 e11a6c4）**：package-lock/win7-package-lock 里 negotiator-0.6.4 integrity 记录错误（+EUsqGPLsM...，实测 tarball 为 myRT3...）→ npm ci EINTEGRITY。已修正 + 主 lockfile 486 处 npmmirror→npmjs（lockfile 锁官方源，镜像勿写入）。本机 npm ci 全量通过。
-- **发布流程备忘**：release.yml 按 `v*` tag 触发——push main 只跑 ci.yml 门禁，**打 tag + push 才触发 Release validation + 云端 Publish**。
-- **本机**：D1/D2/桌面便携为满血版 asar `c938317af63f1e99a8d77c8effd510b7`（含图片外置 + 大纲恢复 + WPS 自动编号 + 解锁模块 + 自动更新禁用）；桌面满血版匿名 zip md5 `e05398f513901bc463dcd23fe99a9267` / sha256 `b61126924edc397e50385db0ff6d911a0dad22c80a5daa820ac6c09cc76a5536`；旧版本清理：GitHub v0.6.1-0.6.3 全删、本机 dist NSIS 0.5.2 删、测试样本全清
-- **CI 门禁修复（2026-08-20）**：ci.yml Windows test job 原无引擎恢复（跑 test:ci），conversion.test.js 的 video→GIF/XLSX→XLS/PDF→DOCX 等真实转换测试无引擎缺失保护 → ffmpeg/libreoffice ENOENT 假失败，每次 main push 发失败邮件。已升级为与 release.yml 一致的引擎恢复序列（restore-ci-engines.ps1 + docstructure 校验/探针 + Thai OCR 暂存）+ npm test 全量（commit 6b63220）；验证 run 32338579299 三 job 全绿（Windows test 16 步、mac×2 11 步）。
-- **本机**：D1/D2 已升级为满血版 c938317a（2026-08-20 最新，含 WPS 自动编号修复，UI 版本号显示满血线 0.5.2）
-- **测试基线**：full-version 504 = 500 过 + 4 skip + 0 fail（含 08-21 新增 5 例）。main 948876d = 94e2aa4 内容一致（office-convert.js 逐字节相同，cherry-pick 干净落地；injectHeadingPrefixes 单测在 main 上实测通过）；⚠️ 本 worktree（C:\appx-build）bin/ 仅有 avs3，缺 libreoffice/poppler/ffmpeg/tessdata/docengine 等引擎 → 全量转换测试在此环境全部 400（环境问题非代码问题，CI 门禁不受影响）；完整门禁以 CI 或主 worktree 为准
-
-## 最近完成的修复（v0.6.1 → v0.6.2）
-
-- **docx→MD 图片外置**（本次核心）：Word 含大量截图转 MD 时图片 base64 内嵌成超长单行（实测 37 图 / 单行 263KB / md 3.3MB），Typora 报「文件过大」拒渲染。修复：对最终 md 统一 externalizeMarkdownImages（正则收集 data:image base64 → 解码写 `<下载名>.assets/image-N.ext` → md 引用改相对路径），mammoth 1.12.0 convertImage 选项实测失效已绕开；实测 FreeRTOS 样本 37 图全外置、md 3.3MB→89KB、最长行 263,960→1,092、Typora 正常打开
-- 配套接线：electron-security.js resolveTrustedDownloadUrl 放行 /downloads/<id>/asset/<name>（原正则拒绝 asset URL → sidecar 拷图静默失败）；server.js asset 路由防穿越；electron-main.js downloadAssetsToMdSidecar；保存流程 md+`.assets/` 文件夹一并保存
-- 已知限制：用户保存时若改文件名（≠downloadName），assets 目录名会错位（默认保存名一致时无影响）
-
-## 待办（下一窗口）
-
-- ① v0.6.1 Release 是否下架（Latest 已自动切到 v0.6.2，旧版保留可作降级通道）——用户决策
-- ② 本机 D1/D2 是否升级到 v0.6.2（docx→MD 修复装到本机运行版）
-- ③ 满血版桌面目录/zip 是否同步分发（zip md5 1f335ccc1c4f2e614dae2c82bece7f97）
-- ④ Partner Center 微软商店：v0.5.1 认证状态现场回读；商店是否跟进 v0.6.2
-- ⑤ 清理：scripts/tmp-verify-full-repack.py、scripts/tmp-verify-zip-final.py（未跟踪临时脚本）、%TEMP% 验证脚本、dist/win-unpacked.old-0817（若存在）
-
-## 最近完成的修复（v0.6.0 → v0.6.1）
-
-- 合规阉割：移除 NCM/KGG/mflac 等音乐平台加密格式解锁 + 自动更新；公开版仅支持普通格式（README/AGENTS/docs/分发与合规规范.md 已同步）；GitHub 版保留打赏，内部版匿名
-- 单词书分类修复：pdf-classifier 多数派判定（scanned 占比 <20% 按 native 走 docengine），修「单词之间：低频词.pdf」PARSE_FAILED
-- PDF 引擎（docengine.exe md5 1d2d12e6）：页眉/页脚擦除（含罗马页码）、标题独立成段、封面标签/值分行、目录/文献独立、表单检测收紧（FORM_ROW_X_GAP=40/FORM_SHORT_MAX=20/图注排除）、RawPage 离群检测加同行伙伴检查（修 1101 缺「二维码」）
-- ICO 增强：PNG→ICO 尺寸自适应（小源图不再上采样模糊）+ extractAllFrames 多帧提取
-- CI 全平台打通过程修复（11 轮）：manifest repository OWNER、docstructure lock 重建、bin/avs3 入库兼容、probe 退出码 20 + stderr 捕获（bash + set +e）、mac /var 符号链接（trustedRoot/isTrustedEntry realpath 自洽）、测试硬编码本机路径、8.3 短名（realpathSync.native）、ZIP 时间戳确定性
-
-## 待办（下一窗口）
-
-- ① **AppX/MSIX 打包未完成**：C:\appx-build 已备好（证书 flyingmouse-code.pfx/openssl2 空密码、AppxManifest MinVersion 17763、Logo 资产已生成）；卡 MakeAppx 0x8007007b——已二分定位到 docengine/_internal/docx/templates/default-docx-template（含 [Content_Types].xml / _rels 保留名），移走嫌疑文件后仍失败，需继续逐文件定位或用 -v verbose 观察；或从包排除 docx/templates 验证引擎运行依赖。打包成功后 signtool 签名
-- ② 真实 Win7 / Mac 物理设备验收（Win7 兼容版 + mac DMG 均已发布但未真机实测）
-- ③ Partner Center 微软商店上架：v0.5.1 认证/发布状态现场回读；v0.6.1 是否走商店（APPX 未成是前置）
-- ④ PyMuPDF AGPL 合规说明（docengine 含 PyMuPDF，许可页附文本 + 源码链接）
-- ⑤ 评定表模板 97.2% 缺 7 字（表格 cell 类，与 1101 不同根因，未排查）
-- ⑥ 清理：bin/ 备份目录（docengine.bak-* ×3 + docengine.old + docstructure.bad-old-005744 ≈ 4G）、cert/（AppX 证书密钥，勿入库）、C:\appx-build（AppX 收尾后删）
-
-## 已知约定
-
-- GitHub remote：https://github.com/LaoFeng-mouse/flyingmouse-format.git；gh 账号 LI-2004-feng
-- 公开发布物署名「牢蜂（LaoFeng）」，非商用（禁止销售/转卖/套壳）；对外措辞「部分格式已下架/合规版」，禁「阉割/破解/解锁/VIP」
-- 引擎 env（测试/转换必需）：FLYINGMOUSE_FFMPEG_PATH / LIBREOFFICE / PDFTOPPM / TESSDATA 指向 D1 resources
-- Win7 构建需 Node 18–22（本机已备 C:\Users\34615\.tools\node-v22.14.0-win-x64）
-- 多窗口并行操作同一仓库易冲突（曾致 package.json 被误重写）；发现文件莫名被改先怀疑并行会话
+旧交接的逐日过程保留在 Git 历史；已被后续版本替代的上传、打包、同步和清理待办不继续作为现役指令。

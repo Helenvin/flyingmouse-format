@@ -6,10 +6,10 @@
 //   - 缓存里缺关键 DLL/注册表资源 → 代码仍直接使用半套引擎；
 //   - 来源包本身残缺但含 soffice.com → 复制完成照样写 .complete，还会清掉本来
 //     可用的旧版本缓存。
-// 新流程（评审建议原样落地）：
-//   复制到 <final>.staging → 按打包期清单校验关键文件（大小，小文件加 sha256）
-//   → 用最小 CSV 做一次真实 --convert-to pdf 并验证输出 → rename 发布为可用
-//   缓存 → 写 .complete → 回收其余旧缓存目录。
+// 准备过程持有跨 Worker/进程锁：复制到 <final>.staging → 按打包期清单校验
+// → 用最小 CSV 做真实 --convert-to pdf 并验证输出 → 写完成标记与验证收据
+// → 旧目录保留为 .previous-* 后发布新目录 → 成功后才清理旧副本/历史缓存。
+// 发布失败恢复旧目录；恢复也失败时保留旧副本供下一次准备恢复与重新校验。
 // 任何一步失败都不得发布半成品；清单缺失/损坏的旧包和已有缓存也必须通过
 // 本次真实转换。有清单且文件快照完全未变时可复用上次真实转换的验证收据。
 // 桌面入口在 worker 中执行本模块，复制、哈希与原生验证均不阻塞窗口。
@@ -28,6 +28,8 @@ const RECEIPT_FILE = ".validated.json";
 const SOFFICE_RELATIVE = path.join("LibreOfficePortable", "App", "libreoffice", "program", "soffice.com");
 // 冒烟转换超时：商店盘冷启 LO + 建 profile 实测可达十几秒，给足余量；超时=不可用。
 const SMOKE_TIMEOUT_MS = 90000;
+const PREPARE_LOCK_NAME = ".flyingmouse-prepare.lock";
+const PREPARE_LOCK_TIMEOUT_MS = 180000;
 
 function sha256File(filePath) {
   return crypto.createHash("sha256").update(fs.readFileSync(filePath)).digest("hex");
@@ -76,6 +78,154 @@ function assertCacheChild(root, target) {
 function removeCacheChild(root, target) {
   assertCacheChild(root, target);
   fs.rmSync(target, { recursive: true, force: true });
+}
+
+function readPrepareOwner(lockDir) {
+  const contents = fs.readFileSync(path.join(lockDir, "owner.json"), "utf8");
+  let owner;
+  try { owner = JSON.parse(contents); }
+  catch { throw new Error("Invalid engine preparation lock owner; lock was preserved"); }
+  if (!owner || !Number.isSafeInteger(owner.pid) || owner.pid <= 0 || !/^[a-f0-9]{24}$/.test(owner.token)) {
+    throw new Error("Invalid engine preparation lock owner; lock was preserved");
+  }
+  return owner;
+}
+
+function retirePrepareLock(root, token, strict = false) {
+  const lockDir = path.join(root, PREPARE_LOCK_NAME);
+  assertCacheChild(root, lockDir);
+  const owner = readPrepareOwner(lockDir);
+  if (owner.pid !== process.pid || owner.token !== token) {
+    if (strict) throw new Error("Engine preparation lock ownership changed");
+    return;
+  }
+  const retired = path.join(root, `.flyingmouse-prepare-${token}.retired`);
+  assertCacheChild(root, retired);
+  // Remove the active lock name atomically before deleting owner.json. A crash
+  // during recursive cleanup can only leave an inert .retired directory.
+  fs.renameSync(lockDir, retired);
+  removeCacheChild(root, retired);
+}
+
+function isProcessAlive(pid) {
+  try { process.kill(pid, 0); return true; }
+  catch (error) { return error.code !== "ESRCH"; }
+}
+
+// Serialize preparation, publication and old-cache cleanup across workers/apps.
+// Construct owner metadata before the atomic directory rename: a crashed owner
+// cannot leave an owner-less lock, and a slow live owner is never evicted by age.
+function acquirePrepareLock(root, timeoutMs = PREPARE_LOCK_TIMEOUT_MS, token = crypto.randomBytes(12).toString("hex")) {
+  if (!/^[a-f0-9]{24}$/.test(token)) throw new Error("Invalid engine preparation owner token");
+  const lockDir = path.join(root, PREPARE_LOCK_NAME);
+  assertCacheChild(root, lockDir);
+  fs.mkdirSync(root, { recursive: true });
+  const pendingDir = path.join(root, `.flyingmouse-prepare-${process.pid}-${token}.pending`);
+  assertCacheChild(root, pendingDir);
+  fs.mkdirSync(pendingDir);
+  fs.writeFileSync(path.join(pendingDir, "owner.json"), JSON.stringify({ pid: process.pid, token }));
+  const deadline = Date.now() + (Number.isFinite(timeoutMs) && timeoutMs >= 0 ? timeoutMs : PREPARE_LOCK_TIMEOUT_MS);
+  const sleeper = new Int32Array(new SharedArrayBuffer(4));
+  let firstAttempt = true;
+  let waitingReason = "another preparation owns the lock";
+  const timeoutError = () => new Error(`Office engine preparation is busy: ${waitingReason}; no cache or staging was changed`);
+  try {
+    for (;;) {
+      if (!firstAttempt && Date.now() >= deadline) throw timeoutError();
+      firstAttempt = false;
+      // Preserve even an empty/unknown lock. On POSIX rename could otherwise
+      // replace an empty directory, while Windows returns EPERM for it.
+      if (!fs.existsSync(lockDir)) {
+        try {
+          fs.renameSync(pendingDir, lockDir);
+          return () => retirePrepareLock(root, token, true);
+        } catch (error) {
+          if (!fs.existsSync(pendingDir) || !["EEXIST", "ENOTEMPTY", "EPERM", "EACCES"].includes(error.code)) throw error;
+          waitingReason = `lock changed during acquisition (${error.code})`;
+        }
+      }
+      assertCacheChild(root, lockDir);
+      let owner;
+      try { owner = readPrepareOwner(lockDir); }
+      catch (error) {
+        if (error.code !== "ENOENT") throw error;
+        waitingReason = fs.existsSync(lockDir)
+          ? "lock owner metadata is missing; unknown lock was preserved"
+          : "lock disappeared during acquisition";
+      }
+      if (owner && !isProcessAlive(owner.pid)) {
+        // Keep this tiny tombstone. Two contenders may have observed the same
+        // dead owner; its non-empty destination makes the second stale rename
+        // fail instead of moving a newer live owner's lock out of the way.
+        const abandoned = path.join(root, `.flyingmouse-prepare-${owner.token}.abandoned`);
+        assertCacheChild(root, abandoned);
+        try { fs.renameSync(lockDir, abandoned); waitingReason = "recovering a dead owner's lock"; }
+        catch (error) {
+          if (!fs.existsSync(abandoned) && fs.existsSync(lockDir)) throw error;
+        }
+      } else if (owner) waitingReason = "another preparation owns the lock";
+      if (Date.now() >= deadline) throw timeoutError();
+      // This synchronous kernel runs in the preparation worker in the desktop
+      // app. Sleep without spinning; never block the renderer/main event loop.
+      Atomics.wait(sleeper, 0, 0, Math.min(50, Math.max(1, deadline - Date.now())));
+    }
+  } finally {
+    if (fs.existsSync(pendingDir)) removeCacheChild(root, pendingDir);
+  }
+}
+
+function releaseExitedWorkerLock(root, token) {
+  try {
+    retirePrepareLock(root, token);
+  } catch (error) { if (error.code !== "ENOENT") throw error; }
+}
+
+function previousBundles(root, destBundle) {
+  const prefix = `${path.basename(destBundle)}.previous-`;
+  return fs.readdirSync(root).filter(name => name.startsWith(prefix) && /^[a-f0-9]{24}$/.test(name.slice(prefix.length)))
+    .map(name => {
+      const candidate = path.join(root, name);
+      assertCacheChild(root, candidate);
+      if (!fs.statSync(candidate).isDirectory()) throw new Error("Previous engine cache is not a directory");
+      return candidate;
+    }).sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs);
+}
+
+function recoverPreviousBundle(root, destBundle) {
+  if (fs.existsSync(destBundle)) return;
+  const previous = previousBundles(root, destBundle)[0];
+  if (previous) fs.renameSync(previous, destBundle);
+  // Recovery only restores the directory. The usual integrity/receipt/smoke
+  // checks still decide whether the restored engine is safe to use.
+}
+
+function discardPreviousBundles(root, destBundle, log) {
+  try {
+    for (const previous of previousBundles(root, destBundle)) removeCacheChild(root, previous);
+  } catch (error) { log("Validated engine is ready; previous cache cleanup deferred", error); }
+}
+
+function publishReplacement(root, stagingDir, destBundle) {
+  let previous;
+  if (fs.existsSync(destBundle)) {
+    previous = `${destBundle}.previous-${crypto.randomBytes(12).toString("hex")}`;
+    assertCacheChild(root, previous);
+    // Failure here leaves the original directory in place.
+    fs.renameSync(destBundle, previous);
+  }
+  try {
+    assertCacheChild(root, stagingDir);
+    fs.renameSync(stagingDir, destBundle);
+  } catch (publicationError) {
+    if (previous) {
+      try { fs.renameSync(previous, destBundle); }
+      catch (rollbackError) {
+        // Never remove the last copy, even if restoring its path also fails.
+        throw new Error(`${publicationError.message}; previous engine preserved at ${previous}; rollback failed: ${rollbackError.message}`);
+      }
+    }
+    throw publicationError;
+  }
 }
 
 function bundleSnapshot(bundleDir) {
@@ -127,8 +277,9 @@ function writeValidationReceipt(bundleDir, manifest) {
 
 function prepareWritableEngineBundleAsync(options) {
   const { log = () => {}, ...workerData } = options;
+  const prepareOwnerToken = crypto.randomBytes(12).toString("hex");
   return new Promise((resolve, reject) => {
-    const worker = new Worker(path.join(__dirname, "store-engine-worker.js"), { workerData });
+    const worker = new Worker(path.join(__dirname, "store-engine-worker.js"), { workerData: { ...workerData, prepareOwnerToken } });
     let settled = false;
     worker.on("message", (message) => {
       if (message.type === "log") log(message.message, message.error ? new Error(message.error) : undefined);
@@ -137,6 +288,10 @@ function prepareWritableEngineBundleAsync(options) {
     });
     worker.on("error", reject);
     worker.on("exit", (code) => {
+      // A worker can die while the owning application process remains alive.
+      // Its exact token permits cleanup only after that worker has exited.
+      try { releaseExitedWorkerLock(workerData.enginesRoot, prepareOwnerToken); }
+      catch (error) { log("Exited engine worker lock cleanup deferred", error); }
       if (!settled) reject(new Error(`Office preparation worker exited without a result (${code})`));
     });
   });
@@ -254,7 +409,9 @@ function prepareWritableEngineBundle(options) {
     enginesRoot,
     smokeTest = defaultSmokeTest,
     log = () => {},
-    tmpRoot
+    tmpRoot,
+    prepareLockTimeoutMs,
+    prepareOwnerToken
   } = options;
   const { destBundle, bundleName } = resolveWritableEngineBundle(options);
   const stagingDir = `${destBundle}${STAGING_SUFFIX}`;
@@ -263,9 +420,13 @@ function prepareWritableEngineBundle(options) {
   const stagingSoffice = path.join(stagingDir, "LibreOfficePortable", "App", "libreoffice", "program", "soffice.com");
   // 清单以来源包为准（复制后 staging 里也有同一份，等价）。
   const manifest = readManifest(bundledBundle);
+  let releaseLock;
 
   try {
+    releaseLock = acquirePrepareLock(enginesRoot, prepareLockTimeoutMs, prepareOwnerToken);
+    recoverPreviousBundle(enginesRoot, destBundle);
     if (isPublishedBundleUsable({ destBundle, destSoffice, completeMarker, manifest, smokeTest, tmpRoot })) {
+      discardPreviousBundles(enginesRoot, destBundle, log);
       return { path: destSoffice, source: "cache" };
     }
     // Retain the previous directory until its replacement has passed validation.
@@ -294,15 +455,16 @@ function prepareWritableEngineBundle(options) {
 
     fs.writeFileSync(path.join(stagingDir, ".complete"), `${bundleName}\n`, "utf8");
     writeValidationReceipt(stagingDir, manifest);
-    // rename 发布：staging→最终目录一次到位，中途不存在「入口在但内容不全」的窗口。
-    removeCacheChild(enginesRoot, destBundle);
-    assertCacheChild(enginesRoot, stagingDir);
-    fs.renameSync(stagingDir, destBundle);
+    // Retain the old directory until publication succeeds. The two renames are
+    // not a power-loss-atomic transaction: a later launch recovers a retained
+    // previous directory, then runs the normal validation before accepting it.
+    publishReplacement(enginesRoot, stagingDir, destBundle);
+    discardPreviousBundles(enginesRoot, destBundle, log);
 
     // 新缓存发布成功后才回收其余旧目录（含仍在用的历史版本；本次 bundle 除外）。
     try {
       for (const name of fs.readdirSync(enginesRoot)) {
-        if (name !== bundleName && !name.endsWith(STAGING_SUFFIX) && /^libreoffice(-|$)/.test(name)) {
+        if (name !== bundleName && !name.endsWith(STAGING_SUFFIX) && !name.includes(".previous-") && /^libreoffice(-|$)/.test(name)) {
           removeCacheChild(enginesRoot, path.join(enginesRoot, name));
         }
       }
@@ -311,14 +473,20 @@ function prepareWritableEngineBundle(options) {
     }
     return { path: destSoffice, source: "published" };
   } catch (error) {
-    // staging 整段丢弃即可——最终目录从未被动过，其余版本缓存也未被动过。
+    // An interrupted publication has restored the old directory or retained it
+    // under .previous-*. Never clean another owner's staging or a previous copy.
     log("LibreOffice writable-engine preparation failed; using bundled path", error);
     try {
-      removeCacheChild(enginesRoot, stagingDir);
+      if (releaseLock) removeCacheChild(enginesRoot, stagingDir);
     } catch {
       // 清理失败只可能来自更底层的 IO 问题，日志已留。
     }
     return { path: bundledSofficePath, source: "bundled", reason: error instanceof Error ? error.message : String(error) };
+  } finally {
+    if (releaseLock) {
+      try { releaseLock(); }
+      catch (error) { log("Engine preparation lock cleanup deferred", error); }
+    }
   }
 }
 

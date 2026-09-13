@@ -34,6 +34,7 @@ const { writePdfOfficeDocx } = require("./pdf-office-docx");
 const { writePdfOfficeXlsx } = require("./pdf-office-xlsx");
 const { parseXmlToJson } = require("./xml-json");
 const logger = require("./logger");
+const { extractPdfScanRegions } = require("./pdf-ocr-regions");
 
 async function convertPdfDecrypt(inputPath, outputPath, password) {
   const pwd = String(password || "");
@@ -100,6 +101,12 @@ function pdfPageNeedsOcr(page) {
   );
 }
 
+function mergeOcrLineSpaces(value) {
+  // Chinese intra-line spacing can be normalized, but a newline is paragraph
+  // structure: never join the scan heading to its following order-number row.
+  return String(value || '').split(/\r?\n/).map(line => String(mergeCnSpaces(line) || '').trim()).join('\n').trim();
+}
+
 async function fillMissingPdfPageText(inputPath, pages, options = {}) {
   // A digital header does not make a raster body searchable. Empty pages alone
   // need no OCR. Coverage also catches a scan behind a searchable stamp.
@@ -115,13 +122,38 @@ async function fillMissingPdfPageText(inputPath, pages, options = {}) {
   try {
     worker = await (options.createOcrWorker || createOcrWorker)();
     const completed = new Map();
+    // A rendered page can squash a scan's glyphs and let readable digital text
+    // hide its low OCR quality. Recover non-overlapping, fully visible raw scans
+    // at their original aspect ratio and judge each region separately.
+    const scanRegions = !options.renderPdfTablePage && missing.every(page => Number.isInteger(page.pageNumber) && Array.isArray(page.lines))
+      ? await extractPdfScanRegions(inputPath, missing, tempDir) : new Map();
     for (const page of missing) {
       const pageNumber = page.pageNumber || pages.indexOf(page) + 1;
+      const regions = scanRegions.get(pageNumber);
+      if (regions?.length) {
+        const blocks = (page.lines || []).map(line => ({ bbox: line.bbox, rows: [line.cells] }));
+        const warnings = [];
+        for (const region of regions) {
+          const result = options.recognizeImageTextWithWorker
+            ? { text: await options.recognizeImageTextWithWorker(worker, region.outputPath), warnings: [] }
+            : await (options.recognizeImageResultWithWorker || recognizeImageResultWithWorker)(worker, region.outputPath);
+          const text = mergeOcrLineSpaces(result.text);
+          if (text) blocks.push({ bbox: region.bbox, rows: text.split(/\r?\n/).filter(line=>line.trim()).map(line=>[line]) });
+          warnings.push(...(result.warnings || []));
+        }
+        blocks.sort((a,b)=>a.bbox[1]-b.bbox[1] || a.bbox[0]-b.bbox[0]);
+        warnings.push({ code:'PDF_OCR_ORIGINAL_IMAGE', messages: {
+          zhCN:'已按原始扫描图的像素和比例分区识别，避免 PDF 拉伸造成乱码；请核对文字、金额和阅读顺序。',
+          enUS:'Visible scan regions were recognized at their original pixel size and aspect ratio to avoid PDF stretching. Review text, amounts and reading order.'
+        } });
+        completed.set(page,{...page,ocr:true,ocrWarnings:warnings,rows:blocks.flatMap(block=>block.rows)});
+        continue;
+      }
       const rendered = await (options.renderPdfTablePage || renderPdfTablePage)(inputPath, pageNumber, tempDir, 200);
       const result = options.recognizeImageTextWithWorker
         ? { text: await options.recognizeImageTextWithWorker(worker, rendered.outputPath), warnings: [] }
         : await (options.recognizeImageResultWithWorker || recognizeImageResultWithWorker)(worker, rendered.outputPath);
-      const text = String(mergeCnSpaces(result.text) || "").trim();
+      const text = mergeOcrLineSpaces(result.text);
       const rows = text ? text.split(/\r?\n/).filter((line) => line.trim()).map((line) => [line]) : [];
       const omittedNative = [];
       for (const nativeRow of page.rows || []) {

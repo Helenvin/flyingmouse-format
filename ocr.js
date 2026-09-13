@@ -122,8 +122,9 @@ async function createOcrWorker() {
 function ocrQuality(data) {
   const text = String(data?.text || "").replace(/\r\n/g, "\n").trim();
   const confidence = Number.isFinite(data?.confidence) ? Math.max(0, Math.min(100, data.confidence)) : null;
-  const words = (data?.blocks || []).flatMap((block) => (block.paragraphs || [])
-    .flatMap((paragraph) => (paragraph.lines || []).flatMap((line) => line.words || [])));
+  const lines = (data?.blocks || []).flatMap((block) => (block.paragraphs || [])
+    .flatMap((paragraph) => paragraph.lines || []));
+  const words = lines.flatMap(line => line.words || []);
   let characters = 0;
   let weakCharacters = 0;
   let uncertainNumbers = false;
@@ -136,16 +137,30 @@ function ocrQuality(data) {
     if (Number.isFinite(word.confidence) && word.confidence < 50 && length >= 2 && /[\p{L}\p{N}]/u.test(word.text || "")) uncertainText = true;
   }
   const weakFraction = characters ? weakCharacters / characters : 0;
-  return { text, confidence, weakFraction, uncertainNumbers, uncertainText };
+  // Digital paragraphs on the same page must not dilute a broken scan heading
+  // or body line. Judge long, predominantly uncertain lines independently; a
+  // short isolated low-confidence token still gets the ordinary review warning.
+  const unreliableLines = lines.filter(line => {
+    let count = 0, weak = 0, weighted = 0;
+    for (const word of line.words || []) {
+      if (!Number.isFinite(word.confidence)) continue;
+      const length = (String(word.text || '').match(/[\p{L}\p{N}]/gu) || []).length;
+      count += length;
+      weighted += length * word.confidence;
+      if (word.confidence < 60) weak += length;
+    }
+    return count >= 6 && weighted / count < 45 && weak / count > 0.65;
+  }).length;
+  return { text, confidence, weakFraction, uncertainNumbers, uncertainText, unreliableLines };
 }
 
 function reliableOcr(result) {
-  return Boolean(result.text && result.confidence >= 80 && result.weakFraction <= 0.2);
+  return Boolean(result.text && result.confidence >= 80 && result.weakFraction <= 0.2 && !result.unreliableLines);
 }
 
 function ocrCandidateScore(result) {
   if (!result.text) return -1;
-  return (result.confidence ?? 0) - 20 * result.weakFraction;
+  return (result.confidence ?? 0) - 20 * result.weakFraction - Math.min(45, 15 * result.unreliableLines);
 }
 
 async function recognizeImageResultWithWorker(worker, inputPath) {
@@ -191,11 +206,11 @@ async function recognizeImageResultWithWorker(worker, inputPath) {
         }
       }
     }
-    if (best.text && ((best.confidence !== null && best.confidence < 60) || best.weakFraction > 0.5)) {
+    if (best.text && ((best.confidence !== null && best.confidence < 60) || best.weakFraction > 0.5 || best.unreliableLines)) {
       throw ocrError("OCR_LOW_CONFIDENCE",
         "扫描文字识别质量过低，已停止导出以避免生成乱码。请使用更清晰、光照均匀的扫描件后重试。",
         "OCR quality is too low to export reliably. Use a sharper, evenly lit scan and try again.",
-        { confidence: best.confidence });
+        { confidence: best.confidence, unreliableLines: best.unreliableLines });
     }
     const warnings = [];
     if (best.orientation) warnings.push({ code: "OCR_ORIENTATION_CORRECTED", messages: {

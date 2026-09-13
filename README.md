@@ -1,6 +1,6 @@
 # FlyingMouse Format / 飞鼠格式
 
-> **0.7.1 修复候选 / repair candidate**：新增字幕互转、PDF/图片转 Markdown、图片转可编辑 Word，并修复混合扫描正文、OCR 方向、多页 TIFF 和 Office 启动准备。可选轻量版不包含高级扫描表格引擎。当前尚未完成商店上架，详见 [修复说明](docs/REPAIR-0.7.1.md)。
+> **0.7.2 修复候选 / repair candidate**：新增字幕互转、PDF/图片转 Markdown、图片转可编辑 Word，并修复混合扫描正文、OCR 方向、多页 TIFF 和 Office 启动准备。可选轻量版不包含高级扫描表格引擎。当前尚未完成商店上架，详见 [修复说明](docs/REPAIR-0.7.2.md)。
 
 > A mouse-themed, offline Windows file converter. / 一款鼠鼠主题、可离线使用的 Windows 文件格式转换工具。
 
@@ -50,9 +50,9 @@
 
 ### 快速开始
 
-本轮 0.7.1 为修复候选：源码、Windows x64 完整版/轻量版 NSIS 和未签名 APPX 已在本地生成并验证，尚未上传到 Release 或 Microsoft Store；本轮未构建 Win7/macOS 安装包。下方各平台文件名仅代表构建命名；发布工作流会将空格替换为连字符，只有实际出现在 Release 资产列表后才可下载。详见[修复与验证说明](docs/REPAIR-0.7.1.md)。
+0.7.2 已完成 Windows x64 完整版的本地源码、真实程序和故障回归验收。公开安装包是否可用以 Release 资产为准；APPX 本地构建不代表已经安装或通过商店认证。修复内容及验证边界见[修复与验收记录](docs/REPAIR-0.7.2.md)。
 
-1. 全平台安装包发布后，在 [Releases](https://github.com/LaoFeng-mouse/flyingmouse-format/releases/latest) 下载 v0.7.1 对应系统的安装包；当前可从该页面选择已经发布的版本。
+1. 全平台安装包发布后，在 [Releases](https://github.com/LaoFeng-mouse/flyingmouse-format/releases/latest) 下载 v0.7.2 对应系统的安装包；当前可从该页面选择已经发布的版本。
 2. 安装并启动 FlyingMouse Format。
 3. 拖入文件，选择目标格式并开始转换。
 4. 选择保存位置；软件会记住目标格式与保存目录。
@@ -88,18 +88,18 @@ npm run dist
 
 ### Windows 版本选择
 
-- **Windows 10 / 11 x64（完整版）**：构建文件为 `FlyingMouse Format-Setup-0.7.1-x64.exe`，使用 Electron 43、Sharp 0.35 和 PDF.js 6，包含高级扫描表格引擎。
-- **Windows 10 / 11 x64（轻量版）**：构建文件为 `FlyingMouse Format-Lite-Setup-0.7.1-x64.exe`，保留常用转换与 OCR；高级扫描表格需要完整版。两者是否可公开下载以 Release 资产为准。
-- **Windows 7 SP1 x64（兼容版）**：构建文件为 `FlyingMouse Format-Setup-0.7.1-win7-x64.exe`。它使用同一源码和鼠鼠 UI，但在独立环境固定 Electron 22.3.27、Sharp 0.32.6 与 PDF.js 2.16.105；本轮尚未构建。
+- **Windows 10 / 11 x64（完整版）**：构建文件为 `FlyingMouse Format-Setup-0.7.2-x64.exe`，使用 Electron 43、Sharp 0.35 和 PDF.js 6，包含高级扫描表格引擎。
+- **Windows 10 / 11 x64（轻量版）**：构建文件为 `FlyingMouse Format-Lite-Setup-0.7.2-x64.exe`，保留常用转换与 OCR；高级扫描表格需要完整版。两者是否可公开下载以 Release 资产为准。
+- **Windows 7 SP1 x64（兼容版）**：构建文件为 `FlyingMouse Format-Setup-0.7.2-win7-x64.exe`。它使用同一源码和鼠鼠 UI，但在独立环境固定 Electron 22.3.27、Sharp 0.32.6 与 PDF.js 2.16.105；本轮尚未构建。
 
-Windows 7 兼容版是 Legacy 构建，不会降低标准版依赖。其 Electron 22 已停止上游安全维护，并包含无法在 Windows 7 上直接升级的已知依赖风险；PDF.js 动态代码执行已通过 `isEvalSupported: false` 缓解，但仍只建议离线处理可信文件。v0.7.1 已完成本地 Windows 主线测试与真实样本回归；远程 CI、macOS、Win7 构建及真实 Windows 7 SP1 x64 设备仍待验收。Windows 安装包均未签名，SmartScreen 可能提示。
+Windows 7 兼容版是 Legacy 构建，不会降低标准版依赖。其 Electron 22 已停止上游安全维护，并包含无法在 Windows 7 上直接升级的已知依赖风险；PDF.js 动态代码执行已通过 `isEvalSupported: false` 缓解，但仍只建议离线处理可信文件。v0.7.2 的验收进度以修复记录为准；Win7 构建及真实 Windows 7 SP1 x64 设备仍待验收。Windows 安装包均未签名，SmartScreen 可能提示。
 
 ### macOS 版本选择
 
-- **Apple Silicon（M1 及更新）**：构建目标 `FlyingMouse Format-Setup-0.7.1-mac-arm64.dmg`。
-- **Intel Mac**：构建目标 `FlyingMouse Format-Setup-0.7.1-mac-x64.dmg`。
+- **Apple Silicon（M1 及更新）**：构建目标 `FlyingMouse Format-Setup-0.7.2-mac-arm64.dmg`。
+- **Intel Mac**：构建目标 `FlyingMouse Format-Setup-0.7.2-mac-x64.dmg`。
 
-macOS 构建目标为 macOS 11 及更新版本，未签名且未公证，可能触发 Gatekeeper。历史版本的原生 GitHub runner 验证不能替代本轮验收；0.7.1 的两个架构尚未构建或验证，真实 Mac 设备仍待验收。
+macOS 构建目标为 macOS 11 及更新版本，未签名且未公证，可能触发 Gatekeeper。历史版本的原生 GitHub runner 验证不能替代本轮验收；0.7.2 的两个架构尚未构建安装包，源码及原生引擎 CI 状态以对应提交为准，真实 Mac 设备仍待验收。
 
 完整构建只需：
 
@@ -142,9 +142,9 @@ Win7 staging 使用专用 `win7-package-lock.json` 和 `npm ci` 重建；推荐�
 
 ### Quick start
 
-This 0.7.1 repair candidate includes source changes, locally built and verified Windows x64 full/lite NSIS installers, and an unsigned APPX. No Release or Microsoft Store upload has been performed, and Win7/macOS installers have not been built for this candidate. Platform filenames below describe local build naming; the release workflow replaces spaces with hyphens, and downloads are available only after appearing in the Release assets. See the [repair and validation notes](docs/REPAIR-0.7.1.md).
+Version 0.7.2 passed local Windows x64 full-build source, real-program and fault-regression acceptance. Public installers are available only when listed in Release assets; a locally built APPX does not establish installation or Store certification. See the [repair and acceptance record](docs/REPAIR-0.7.2.md).
 
-1. Once published, download the v0.7.1 build for your system from [Releases](https://github.com/LaoFeng-mouse/flyingmouse-format/releases/latest). Until then, choose an already published version listed there.
+1. Once published, download the v0.7.2 build for your system from [Releases](https://github.com/LaoFeng-mouse/flyingmouse-format/releases/latest). Until then, choose an already published version listed there.
 2. Install and launch FlyingMouse Format.
 3. Drop in files, choose a target, and convert.
 4. Choose a save location. The app remembers both the target preference and save folder.
@@ -166,18 +166,18 @@ Packaged builds accept the same commands after `--cli`: use `FlyingMouse Format.
 
 ### Choose a Windows build
 
-- **Windows 10 / 11 x64 (full):** the build output is `FlyingMouse Format-Setup-0.7.1-x64.exe`, with Electron 43, Sharp 0.35, PDF.js 6, and the advanced scanned-table engine.
-- **Windows 10 / 11 x64 (lite):** the build output is `FlyingMouse Format-Lite-Setup-0.7.1-x64.exe`, retaining common conversions and OCR; advanced scanned tables require the full build. Public availability depends on the actual Release assets.
-- **Windows 7 SP1 x64 (compatibility build):** the output would be `FlyingMouse Format-Setup-0.7.1-win7-x64.exe`, derived from the same source and mouse UI with Electron 22.3.27, Sharp 0.32.6, and PDF.js 2.16.105 pinned in isolation. This candidate has not been built for Win7.
+- **Windows 10 / 11 x64 (full):** the build output is `FlyingMouse Format-Setup-0.7.2-x64.exe`, with Electron 43, Sharp 0.35, PDF.js 6, and the advanced scanned-table engine.
+- **Windows 10 / 11 x64 (lite):** the build output is `FlyingMouse Format-Lite-Setup-0.7.2-x64.exe`, retaining common conversions and OCR; advanced scanned tables require the full build. Public availability depends on the actual Release assets.
+- **Windows 7 SP1 x64 (compatibility build):** the output would be `FlyingMouse Format-Setup-0.7.2-win7-x64.exe`, derived from the same source and mouse UI with Electron 22.3.27, Sharp 0.32.6, and PDF.js 2.16.105 pinned in isolation. This candidate has not been built for Win7.
 
-The Windows 7 package is a Legacy build and does not downgrade the standard build. Electron 22 no longer receives upstream security maintenance, and other known legacy dependency risks cannot be upgraded without dropping Windows 7. PDF.js dynamic evaluation is disabled as a mitigation, but this build should remain offline and process trusted files only. v0.7.1 passed local Windows mainline tests and real-sample checks; remote CI, macOS, Win7 builds, and physical Windows 7 SP1 x64 acceptance remain pending. Both Windows installers are unsigned and may trigger SmartScreen.
+The Windows 7 package is a Legacy build and does not downgrade the standard build. Electron 22 no longer receives upstream security maintenance, and other known legacy dependency risks cannot be upgraded without dropping Windows 7. PDF.js dynamic evaluation is disabled as a mitigation, but this build should remain offline and process trusted files only. See the repair record for v0.7.2 validation; Win7 builds and physical Windows 7 SP1 x64 acceptance remain pending. Both Windows installers are unsigned and may trigger SmartScreen.
 
 ### Choose a macOS build
 
-- **Apple Silicon (M1 or newer):** build target `FlyingMouse Format-Setup-0.7.1-mac-arm64.dmg`.
-- **Intel Mac:** build target `FlyingMouse Format-Setup-0.7.1-mac-x64.dmg`.
+- **Apple Silicon (M1 or newer):** build target `FlyingMouse Format-Setup-0.7.2-mac-arm64.dmg`.
+- **Intel Mac:** build target `FlyingMouse Format-Setup-0.7.2-mac-x64.dmg`.
 
-macOS builds target macOS 11 or newer and are unsigned and unnotarized, so Gatekeeper may warn. Historical native GitHub runner results do not validate this candidate: neither macOS architecture has been built or tested for 0.7.1, and physical Mac acceptance remains pending.
+macOS builds target macOS 11 or newer and are unsigned and unnotarized, so Gatekeeper may warn. Historical native GitHub runner results do not validate this candidate: neither macOS installer has been built for 0.7.2; code and native-engine CI must be checked against the corresponding commit, and physical Mac acceptance remains pending.
 
 The complete build requires only:
 

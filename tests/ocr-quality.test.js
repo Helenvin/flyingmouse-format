@@ -56,6 +56,20 @@ test("a small garbled heading is warned even when the remaining page has high co
   assert.ok(result.warnings.some(warning => warning.code === "OCR_REVIEW_RECOMMENDED"));
 });
 
+test("readable digital text cannot mask a severely garbled separate scan line", async t => {
+  const input = await inputFixture(t);
+  let calls = 0;
+  await assert.rejects(recognizeImageResultWithWorker({ recognize: async () => {
+    calls++;
+    return { data: { text: `${'Account metadata is readable.\n'.repeat(12)}Si Dix) HH 21] Bf.`, confidence: 94,
+      blocks: [{ paragraphs: [{ lines: [
+        { words: [{ text: 'Account metadata is readable.'.repeat(12), confidence: 97 }] },
+        { words: [{ text: 'Si', confidence: 0 }, { text: 'Dix)', confidence: 29 }, { text: 'HH', confidence: 45 }, { text: '21]', confidence: 36 }, { text: 'Bf.', confidence: 25 }] }
+      ] }] }] } };
+  } }, input), error => error.code === 'OCR_LOW_CONFIDENCE' && error.details.unreliableLines === 1);
+  assert.equal(calls, 5);
+});
+
 test("a successful layout retry ends orientation search and reports recovery", async (t) => {
   const input = await inputFixture(t);
   const modes = [];

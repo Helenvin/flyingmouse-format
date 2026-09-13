@@ -22,7 +22,7 @@
 ### 主要功能
 
 - 鼠鼠原版界面：鼠鼠会跟随上传、识别、批量、OCR、转换成功或失败切换状态。
-- 本地离线转换：内置 FFmpeg、LibreOffice、Poppler、Tesseract 和 AVS3 解码器；Windows 10/11 与 macOS 版增加 Pandoc 文档引擎。
+- 本地离线转换：内置 FFmpeg、LibreOffice、Poppler 和 Tesseract；Windows 10/11 与 macOS 版增加 Pandoc 文档引擎。AV3A 和平台加密音频不在当前支持范围内。
 - 支持图片、文本、Word/WPS、Excel/WPS、PPT/WPS、PDF、音频、视频和 ZIP。
 - 音频转换：支持 MP3 / WAV / FLAC / M4A / AAC / OGG / OPUS / WMA 等普通格式互转；**不支持其他音乐平台的加密特殊格式**（如 NCM / KGG / mflac / kgma / kwm 等）。
 - 视频编码选择：转视频时可选 H.264 / H.265 / AV1 编码（目标 mp4/mov/mkv 时显示）。
@@ -116,7 +116,7 @@ Win7 staging 使用专用 `win7-package-lock.json` 和 `npm ci` 重建；推荐�
 ### Highlights
 
 - Original mouse UI with animated state changes for upload, detection, batch work, OCR, success, and errors.
-- Fully local conversion with bundled FFmpeg, LibreOffice, Poppler, Tesseract, and an AVS3 decoder.
+- Fully local conversion with bundled FFmpeg, LibreOffice, Poppler, and Tesseract. AV3A and platform-encrypted audio are not supported inputs.
 - Converts images, text, Word/WPS, Excel/WPS, PPT/WPS, PDF, audio, video, and ZIP files.
 - Audio conversion between ordinary formats: MP3 / WAV / FLAC / M4A / AAC / OGG / OPUS / WMA. **Encrypted special formats from music platforms (NCM / KGG / mflac / kgma / kwm etc.) are NOT supported.**
 - Video codec selection: H.264 / H.265 / AV1 for video conversion (shown when targeting mp4/mov/mkv).

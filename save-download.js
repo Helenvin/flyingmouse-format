@@ -7,6 +7,8 @@
 //   绝不触碰 destination——用户已存在的旧文件要么原样保留、要么被完整的
 //   新内容一次性替换，不存在「保存失败 → 旧文件没了」的中间态。
 //   （覆盖同名文件由系统 rename 语义保证；rename 失败时旧文件仍在。）
+//   批量不覆盖模式优先硬链接发布；FAT/exFAT 等不支持时只排他复制到新文件，
+//   该兼容分支在复制完成后才报告成功，但不承诺断电时新文件的原子可见性。
 
 const fs = require("fs");
 const path = require("path");
@@ -27,7 +29,15 @@ function partialPathFor(destination) {
 async function publishDownloadedFile(stagedPath, destination, options = {}) {
   if (options.overwrite === false) {
     // link fails atomically with EEXIST; checking exists before rename would race.
-    await fs.promises.link(stagedPath, destination);
+    try {
+      await fs.promises.link(stagedPath, destination);
+    } catch (error) {
+      // FAT/exFAT and some network filesystems do not support hard links.
+      // libuv translates Windows ERROR_INVALID_FUNCTION to EISDIR. EXCL keeps
+      // the no-overwrite boundary even if another save creates the name first.
+      if (!["ENOTSUP", "EOPNOTSUPP", "ENOSYS", "EXDEV", "EPERM", "EISDIR"].includes(error?.code)) throw error;
+      await fs.promises.copyFile(stagedPath, destination, fs.constants.COPYFILE_EXCL);
+    }
     // The complete destination is now published. A cleanup failure cannot turn
     // this success into an asset rollback that would break the new document.
     await fs.promises.unlink(stagedPath).catch((error) => {

@@ -1,6 +1,9 @@
 const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("flyingMouseFormat", {
+  rendererReady() {
+    return ipcRenderer.invoke("renderer-ready");
+  },
   getSettings() {
     return ipcRenderer.invoke("get-settings");
   },

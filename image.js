@@ -8,6 +8,7 @@ const fsp = require("fs/promises");
 const os = require("os");
 const path = require("path");
 const zlib = require("zlib");
+const { finished } = require("stream/promises");
 const sharp = require("sharp");
 const { FFMPEG_PATH, DCRAW_PATH, rawInput } = require("./config");
 const RAW_EXTENSIONS = rawInput;
@@ -375,22 +376,11 @@ async function readPngAsPdfImage(inputPath) {
 }
 
 // 流式写入辅助：向 PDF 输出流逐块写入，并同步累计字节位置（供 xref 偏移使用）。
-// 当写缓冲达到高水位（write() 返回 false）时等待 drain，避免 Node 内部写入队列
-// 无限增长——这是「大量图片转 PDF 不再 OOM」的关键：内存只保留当前块，不随张数累积。
+// 每块等待实际写入完成，既限制写缓冲，也把打开/写盘失败交回转换请求。
 function writePdfChunk(stream, buffer, pos) {
   pos.value += buffer.length;
-  if (stream.write(buffer)) return Promise.resolve();
   return new Promise((resolve, reject) => {
-    const onDrain = () => {
-      stream.removeListener("error", onError);
-      resolve();
-    };
-    const onError = (err) => {
-      stream.removeListener("drain", onDrain);
-      reject(err);
-    };
-    stream.once("drain", onDrain);
-    stream.once("error", onError);
+    stream.write(buffer, (error) => error ? reject(error) : resolve());
   });
 }
 
@@ -421,6 +411,10 @@ async function convertImagesToPdf(imageFiles, outputPath) {
   }
 
   const stream = fs.createWriteStream(outputPath);
+  // Keep the error listener alive even while decoding the next image. Otherwise
+  // an asynchronous open/write error can terminate the whole desktop process.
+  const completion = finished(stream);
+  completion.catch(() => {});
   const pos = { value: 0 };
   const offsets = {};
   try {
@@ -483,12 +477,11 @@ async function convertImagesToPdf(imageFiles, outputPath) {
     const trailer = `trailer\n<< /Size ${objectCount + 1} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF\n`;
     await writePdfChunk(stream, pdfAscii(xref + trailer), pos);
 
-    await new Promise((resolve, reject) => {
-      stream.once("error", reject);
-      stream.end(resolve);
-    });
+    stream.end();
+    await completion;
   } catch (error) {
     stream.destroy();
+    await completion.catch(() => {});
     throw error;
   }
 }

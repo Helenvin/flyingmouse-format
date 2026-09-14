@@ -251,19 +251,35 @@ function purgeRuntimeDirsSync({ dirs = [UPLOAD_DIR, OUTPUT_DIR], fsModule = fs }
   }
 }
 
-// 启动时回收历史实例遗留的 runtime 目录（旧 pid 后缀目录 / 上次崩溃残留），
-// 只保留本实例正在使用的 RUNTIME_DIR。超过 PRODUCT_EXPIRY_MS 的才删，防止误删
-// 另一实例刚写入的文件（pid 隔离后各用各的目录，这里只是兜底回收）。
+function runtimeProcessIsAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    // Lack of permission is not evidence that another instance has exited.
+    return error.code !== "ESRCH";
+  }
+}
+
+// Reclaim only old, exactly named PID directories whose process has exited.
+// The parent directory timestamp does not track changes to nested output files.
 async function purgeStaleRuntimeDirs({ runtimeDir = RUNTIME_DIR } = {}) {
+  runtimeDir = path.resolve(runtimeDir);
   const parent = path.dirname(runtimeDir);
   const base = path.basename(runtimeDir);
-  const prefix = base.replace(/-\d+$/, "-");
+  const currentInstance = /^(.*-)(\d+)$/.exec(base);
+  if (!currentInstance) return;
+  const prefix = currentInstance[1];
   const cutoff = Date.now() - PRODUCT_EXPIRY_MS;
   const entries = await fsp.readdir(parent, { withFileTypes: true }).catch(() => []);
   await Promise.all(entries
-    .filter((entry) => entry.isDirectory()
-      && entry.name.startsWith(prefix)
-      && path.join(parent, entry.name) !== runtimeDir)
+    .filter((entry) => {
+      if (!entry.isDirectory() || !entry.name.startsWith(prefix)
+        || path.join(parent, entry.name) === runtimeDir) return false;
+      const suffix = entry.name.slice(prefix.length);
+      const pid = Number(suffix);
+      return /^\d+$/.test(suffix) && Number.isSafeInteger(pid) && pid > 0 && !runtimeProcessIsAlive(pid);
+    })
     .map(async (entry) => {
       const dirPath = path.join(parent, entry.name);
       const stat = await fsp.stat(dirPath).catch(() => null);
@@ -273,12 +289,9 @@ async function purgeStaleRuntimeDirs({ runtimeDir = RUNTIME_DIR } = {}) {
     }));
 }
 
-// md 转换产物若带图片外置目录（<下载名>.assets/），返回该目录路径；否则 null。
-// 目录名基于 downloadName（与 office-convert 的 outputNameFor(originalName,"md") 一致），
-// 不能用 mdPath 前缀（outputPath 带时间戳-uuid，会找不到）。
-async function findMarkdownAssetsDir(mdPath, downloadName) {
-  const mdBasename = path.basename(downloadName, path.extname(downloadName));
-  const assetsDir = path.join(path.dirname(mdPath), `${mdBasename}.assets`);
+// Each result owns a unique resource directory, even when download names match.
+async function findMarkdownAssetsDir(mdPath) {
+  const assetsDir = `${mdPath}.assets`;
   try {
     const stat = await fsp.stat(assetsDir);
     if (stat.isDirectory()) return assetsDir;
@@ -381,12 +394,12 @@ async function getToolDiagnostics() {
   };
 }
 
-function isLocalWebOrigin(value) {
+function isLocalWebOrigin(value, localPort) {
   if (!value) return false;
   try {
     const url = new URL(value);
-    return url.protocol === "http:"
-      && (url.hostname === "127.0.0.1" || url.hostname === "localhost" || url.hostname === "[::1]" || url.hostname === "::1");
+    return !url.username && !url.password
+      && url.origin === `http://127.0.0.1:${localPort}`;
   } catch {
     return false;
   }
@@ -395,11 +408,11 @@ function isLocalWebOrigin(value) {
 function assertLocalWebRequest(req, res, next) {
   const origin = req.headers.origin;
   const referer = req.headers.referer;
-  if (origin && !isLocalWebOrigin(origin)) {
+  if (origin && !isLocalWebOrigin(origin, req.socket.localPort)) {
     res.status(403).json({ error: "拒绝跨站请求。" });
     return;
   }
-  if (referer && !isLocalWebOrigin(referer)) {
+  if (referer && !isLocalWebOrigin(referer, req.socket.localPort)) {
     res.status(403).json({ error: "拒绝跨站请求。" });
     return;
   }
@@ -598,6 +611,10 @@ app.post("/api/merge-pdfs", assertLocalWebRequest, upload.array("files"), async 
     logger.error(`Merge-PDFs failed: "${combinedName}"`, error);
     await Promise.all(files.map((file) => fsp.rm(file.path, { force: true }).catch(() => {})));
     await fsp.rm(outputPath, { force: true }).catch(() => {});
+    if (error.code === "PDF_ENCRYPTED_INPUT") {
+      res.status(422).json({ error: error.message, errorCode: error.code, messages: error.messages });
+      return;
+    }
     if (!sendResourceError(res, error)) res.status(500).json({ error: error.message || "合并 PDF 失败。" });
   }
 });
@@ -747,7 +764,7 @@ app.post("/api/convert", assertLocalWebRequest, upload.single("file"), async (re
     // 保存时主进程按 assets 清单把图片拷到 md 同目录，保证相对引用可用。
     let mdAssetsDir = null;
     if (requestedTarget === "md" && category === "document") {
-      mdAssetsDir = await findMarkdownAssetsDir(outputPath, downloadName);
+      mdAssetsDir = await findMarkdownAssetsDir(outputPath);
     }
     const registered = registerDownload(outputPath, downloadName, mimeType, { assetsDir: mdAssetsDir });
     if (mdAssetsDir) registered.assets = await listDownloadAssets(mdAssetsDir, registered.downloadUrl);
@@ -779,6 +796,7 @@ app.post("/api/convert", assertLocalWebRequest, upload.single("file"), async (re
       "YAML_JSON_PARSE_FAILED",
       "PDF_ENCRYPT_UNAVAILABLE",
       "PDF_ENCRYPT_NO_PASSWORD",
+      "PDF_ENCRYPTED_INPUT",
       "PRESENTATION_HTML_EMPTY",
       "BMP_UNSUPPORTED_VARIANT",
       "JSON_CSV_PATH_COLLISION",
@@ -790,6 +808,7 @@ app.post("/api/convert", assertLocalWebRequest, upload.single("file"), async (re
     else logger.error(`Convert failed: "${originalName}" -> ${requestedTarget}`, error);
     await fsp.rm(file.path, { force: true }).catch(() => {});
     await fsp.rm(outputPath, { force: true }).catch(() => {});
+    await fsp.rm(`${outputPath}.assets`, { recursive: true, force: true }).catch(() => {});
     const payload = isResourceLimitError ? resourceErrorPayload(error) : { error: error.message || "转换失败。" };
     if (error?.code) payload.errorCode = error.code;
     if (error?.messages) payload.messages = error.messages;

@@ -4,7 +4,7 @@
 
 FlyingMouse Format（飞鼠格式）是 Windows Electron 离线文件转换器。主产品必须使用原版鼠鼠 UI；它与“鼠鼠打印”是两个独立项目，禁止跨项目修改或混合发布物。
 
-当前技术栈：Electron 43、Windows 10/11 x64、鼠鼠 UI、中英文切换、批量转换、偏好与保存目录记忆。PDF 按原生/扫描内容分流，见 [架构](docs/ARCHITECTURE.md)；OFD 仅通过 `ofd-convert.js` 转 PDF，不走 LibreOffice。Windows 7 SP1 x64 只通过独立 staging 派生 Electron 22.3.27，禁止降低根 manifest 的主线依赖。当前候选与发布状态以 [0.7.2 修复说明](docs/REPAIR-0.7.2.md) 为准，不能从源码版本推断已安装或已发布版本。
+当前技术栈：Electron 43、Windows 10/11 x64、鼠鼠 UI、中英文切换、批量转换、偏好与保存目录记忆。PDF 按原生/扫描内容分流，见 [架构](docs/ARCHITECTURE.md)；OFD 仅通过 `ofd-convert.js` 转 PDF，不走 LibreOffice。Windows 7 SP1 x64 只通过独立 staging 派生 Electron 22.3.27，禁止降低根 manifest 的主线依赖。当前候选与发布状态以 [0.7.3 修复说明](docs/REPAIR-0.7.3.md) 为准，不能从源码版本推断已安装或已发布版本。
 
 ## Source map
 
@@ -121,7 +121,7 @@ npm audit --omit=dev --prefix output\win7-stage
 - `README.md`：面向用户的中英文介绍、下载与格式范围。
 - `docs/ARCHITECTURE.md`：运行架构、状态和数据边界。
 - `docs/RELEASE.md`：本机测试、打包、桌面同步与 GitHub 发布清单。
-- `docs/HANDOFF.md`：恢复工作入口；候选状态与剩余风险指向 `docs/REPAIR-0.7.2.md`。
+- `docs/HANDOFF.md`：恢复工作入口；候选状态与剩余风险指向 `docs/REPAIR-0.7.3.md`。
 - `docs/privacy-policy.html`：面向用户和 Microsoft Store 的隐私政策。
 - `docs/微软商店上架清单.md`、`docs/上架材料包.md`：商店渠道资料；外部审核状态必须写绝对日期并注明是否已现场复核。
 

@@ -89,3 +89,31 @@ test("purgeStaleRuntimeDirs reclaims old sibling instance dirs only", async (t) 
   assert.ok(fs.existsSync(fresh));
   assert.ok(fs.existsSync(foreign), "non-matching dirs are never touched");
 });
+
+test("purgeStaleRuntimeDirs preserves a running instance even when its directory is old", async (t) => {
+  const parent = await scratchDir(t, "stale-live");
+  const current = path.join(parent, "fm-runtime-99999999");
+  const live = path.join(parent, `fm-runtime-${process.pid}`);
+  await fsp.mkdir(current);
+  await fsp.mkdir(live);
+  const product = path.join(live, "unsaved.pdf");
+  await fsp.writeFile(product, "user result");
+  const old = new Date(Date.now() - 3 * DAY_MS);
+  await fsp.utimes(live, old, old);
+  await purgeStaleRuntimeDirs({ runtimeDir: current });
+  assert.equal(await fsp.readFile(product, "utf8"), "user result");
+});
+
+test("purgeStaleRuntimeDirs never treats arbitrary prefix matches as owned instances", async (t) => {
+  const parent = await scratchDir(t, "stale-boundary");
+  const current = path.join(parent, "fm-runtime-99999999");
+  const backup = path.join(parent, "fm-runtime-backup");
+  await fsp.mkdir(current);
+  await fsp.mkdir(backup);
+  const old = new Date(Date.now() - 3 * DAY_MS);
+  await fsp.utimes(backup, old, old);
+  await purgeStaleRuntimeDirs({ runtimeDir: current });
+  assert.ok(fs.existsSync(backup));
+  await purgeStaleRuntimeDirs({ runtimeDir: path.join(parent, "fm-runtime") });
+  assert.ok(fs.existsSync(backup), "an unscoped standalone runtime must not sweep siblings");
+});

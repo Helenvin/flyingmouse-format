@@ -36,14 +36,22 @@ function normalizeTargetMap(value) {
   return result;
 }
 
-async function readSettings(settingsPath) {
-  let stored = {};
+async function readSettingsDocument(settingsPath) {
   try {
     const parsed = JSON.parse(await fsp.readFile(settingsPath, "utf8"));
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) stored = parsed;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
   } catch {
     // Missing or damaged settings fall back without blocking the application.
   }
+  return null;
+}
+
+async function readSettings(settingsPath) {
+  // Store redirection may require a non-atomic copy. If that copy is interrupted,
+  // recover the last complete settings even after the process has restarted.
+  const stored = await readSettingsDocument(settingsPath)
+    || await readSettingsDocument(`${settingsPath}.recovery`)
+    || {};
 
   const settings = {
     schemaVersion: SCHEMA_VERSION,
@@ -63,6 +71,7 @@ async function writeSettings(settingsPath, settings) {
   const parent = path.dirname(settingsPath);
   await fsp.mkdir(parent, { recursive: true });
   const temporaryPath = `${settingsPath}.tmp-${process.pid}-${crypto.randomUUID()}`;
+  const recoveryPath = `${settingsPath}.recovery`;
   try {
     await fsp.writeFile(temporaryPath, `${JSON.stringify(settings, null, 2)}\n`, "utf8");
     try {
@@ -70,12 +79,26 @@ async function writeSettings(settingsPath, settings) {
     } catch (err) {
       if (err && err.code === "EXDEV") {
         // Cross-device rename is not supported (Store AppContainer redirection / OneDrive KFM / junction).
-        // Fall back to a copy so the settings write still succeeds; the outer finally removes the temp file.
-        await fsp.copyFile(temporaryPath, settingsPath);
+        // copyFile can truncate/remove its destination on error. Back up a valid
+        // primary before touching it; if it is already damaged, retain the prior
+        // recovery file. A backup failure must leave the primary untouched.
+        if (await readSettingsDocument(settingsPath)) {
+          await fsp.copyFile(settingsPath, recoveryPath);
+        }
+        try {
+          await fsp.copyFile(temporaryPath, settingsPath);
+        } catch (copyError) {
+          if (await readSettingsDocument(recoveryPath)) {
+            await fsp.copyFile(recoveryPath, settingsPath).catch(() => {});
+          }
+          throw copyError;
+        }
       } else {
         throw err;
       }
     }
+    // Only discard recovery after the new primary has been completely published.
+    await fsp.rm(recoveryPath, { force: true }).catch(() => {});
   } finally {
     await fsp.rm(temporaryPath, { force: true }).catch(() => {});
   }

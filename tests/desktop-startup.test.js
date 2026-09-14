@@ -3,6 +3,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const vm = require("node:vm");
 const { test } = require("node:test");
+const { EventEmitter } = require("node:events");
 const { createOfficeReadiness } = require("../office-readiness");
 
 async function startDesktop({ serverFailure } = {}) {
@@ -18,13 +19,15 @@ async function startDesktop({ serverFailure } = {}) {
     quit: () => events.push("quit"), disableHardwareAcceleration() {}, setAppUserModelId() {},
     commandLine: { appendSwitch() {} }
   };
-  class Window {
+  class Window extends EventEmitter {
     constructor(options) {
+      super();
       events.push("window");
       assert.equal(options.webPreferences.sandbox, true);
-      this.webContents = { on() {} };
+      this.webContents = new EventEmitter();
+      this.webContents.session = { setProxy: async () => { events.push("direct"); }, closeAllConnections: async () => {} };
     }
-    on() {}
+    isDestroyed() { return false; }
     loadURL() { events.push("load"); }
   }
   const logger = { setLogFile() {}, getLogFile: () => "C:/test-user/debug.log", info() {}, error() {} };
@@ -61,7 +64,7 @@ async function startDesktop({ serverFailure } = {}) {
 
 test("Store desktop creates its window before Office copy and keeps running after preparation failure", async () => {
   const { events, state, finishPreparation, context } = await startDesktop();
-  assert.deepEqual(events, ["server", "window", "load", "prepare"]);
+  assert.deepEqual(events, ["server", "window", "direct", "prepare", "load"]);
   assert.equal(context.process.env.FLYINGMOUSE_LIBREOFFICE_PATH, "C:/writable/soffice.com");
   assert.equal(state.getOfficeState().status, "pending");
   finishPreparation({ source: "bundled", path: "C:/readonly/soffice.com", reason: "disk full" });

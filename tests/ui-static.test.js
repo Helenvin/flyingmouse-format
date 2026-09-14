@@ -242,7 +242,7 @@ test("folder-to-PDF entry is exposed bilingually with webkitdirectory input", ()
   assert.match(html, /id="chooseFolderButton"/);
   assert.match(app, /"upload\.chooseFolder": "选择文件夹转 PDF"/);
   assert.match(app, /"upload\.chooseFolder": "Choose folder → PDF"/);
-  assert.match(app, /chooseFolderButton\.addEventListener\("click", \(\) => folderInput\.click\(\)\)/);
+  assert.match(app, /chooseFolderButton\.addEventListener\("click", \(\) => \{ if \(!state\.isConverting\) folderInput\.click\(\); \}\)/);
   assert.match(app, /folderInput\.addEventListener\("change"/);
   assert.match(app, /state\.folderName/);
   assert.match(app, /webkitRelativePath/);

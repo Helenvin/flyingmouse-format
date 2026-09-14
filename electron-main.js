@@ -15,6 +15,7 @@ const logger = require("./logger");
 const { buildDiagnosticsReport } = require("./diagnostics");
 const { discoverSkillRoots, installAgentSkill } = require("./agent-skill-installer");
 const { resolveRuntimePaths } = require("./runtime-paths");
+const { createDesktopRecovery } = require("./desktop-recovery");
 const {
   mergeLegacySettings,
   readLastSaveDirectory,
@@ -24,6 +25,7 @@ const {
 } = require("./settings-store");
 
 let mainWindow = null;
+let desktopRecovery = null;
 let server = null;
 let serverUrl = "";
 let serverRuntime = null;
@@ -67,14 +69,23 @@ function createWindow(url) {
     event.preventDefault();
     log("Blocked renderer navigation");
   });
-  mainWindow.loadURL(url);
-  mainWindow.webContents.on("did-finish-load", () => log("Window finished loading"));
-  mainWindow.webContents.on("did-fail-load", (_event, code, description) => log(`Window failed loading ${code}: ${description}`));
+  desktopRecovery = createDesktopRecovery({ window: mainWindow, url, dialog, shell,
+    log, logPath: logger.getLogFile() });
+  void desktopRecovery.start();
   mainWindow.on("closed", () => {
     log("Main window closed");
     mainWindow = null;
+    desktopRecovery = null;
   });
 }
+
+ipcMain.handle("renderer-ready", (event) => {
+  assertTrustedIpc(event);
+  if (event.sender !== mainWindow?.webContents || event.senderFrame !== event.sender.mainFrame) {
+    throw new Error("Rejected interface readiness sender.");
+  }
+  desktopRecovery?.markReady();
+});
 
 ipcMain.handle("get-app-version", (event) => {
   assertTrustedIpc(event);
@@ -300,7 +311,15 @@ ipcMain.handle("export-diagnostics", async (event) => {
     userHome: os.homedir(),
     environment: process.env
   });
-  await fs.promises.writeFile(result.filePath, report, "utf8");
+  const stagedReport = saveDownload.partialPathFor(result.filePath);
+  try {
+    await fs.promises.writeFile(stagedReport, report, { encoding: "utf8", flag: "wx" });
+    await saveDownload.publishDownloadedFile(stagedReport, result.filePath, { log });
+  } finally {
+    // A failed report write must not truncate an existing user-selected file.
+    await fs.promises.rm(stagedReport, { force: true })
+      .catch((error) => log("Failed to remove staged diagnostics report", error));
+  }
   await writeLastSaveDirectory(settingsPath, path.dirname(result.filePath))
     .catch((error) => log("Failed to remember diagnostics directory", error));
   return { canceled: false, filePath: result.filePath };

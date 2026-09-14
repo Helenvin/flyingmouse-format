@@ -137,11 +137,15 @@ function walk(directory) {
     checked++;
   }
 }
-walk(process.argv[1]);
+walk(process.argv[2]);
 console.log(`Package tree verified: ${checked} entries, no symlinks or junctions`);
 '@
 $treeNode = Get-Command node -ErrorAction Stop
-Invoke-CheckedNative $treeNode.Source @('-e', $treeCheck, $unpackedRoot)
+# Windows PowerShell 5.1 strips embedded quotes in native -e arguments. Execute
+# a task-owned script file so both Windows PowerShell and pwsh preserve the code.
+$treeCheckPath = Join-Path $stageRoot 'verify-package-tree.cjs'
+[IO.File]::WriteAllText($treeCheckPath, $treeCheck, [Text.UTF8Encoding]::new($false))
+Invoke-CheckedNative $treeNode.Source @($treeCheckPath, $unpackedRoot)
 
 # Robocopy supports long runtime paths. Codes 0 through 7 are documented success
 # states; /XJ is an additional guard after rejecting every source reparse point.

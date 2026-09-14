@@ -178,3 +178,40 @@ test("overwrite false atomically refuses an existing target and publishes a new 
   assert.equal(await fsp.readFile(fresh, "utf8"), "complete");
   assert.deepEqual((await fsp.readdir(dir)).sort(), ["existing.txt", "new.txt"]);
 });
+
+for (const code of ["ENOTSUP", "EISDIR"]) {
+  test(`batch save works without hard links (${code}) and never overwrites a conflicting file`, async (t) => {
+    const dir = await scratchDir(t, "save-no-hardlinks");
+    const existing = path.join(dir, "existing.txt");
+    await fsp.writeFile(existing, "original user data");
+    t.mock.method(fsp, "link", async () => {
+      throw Object.assign(new Error("hard links unsupported by filesystem"), { code });
+    });
+    const baseUrl = await startServer(t, () => (res) => res.end("complete new result"));
+    const target = path.join(dir, "new.txt");
+    await downloadToFile(`${baseUrl}/file`, target, { overwrite: false });
+    assert.equal(await fsp.readFile(target, "utf8"), "complete new result");
+    await assert.rejects(downloadToFile(`${baseUrl}/file`, existing, { overwrite: false }), /EEXIST/);
+    assert.equal(await fsp.readFile(existing, "utf8"), "original user data");
+    assert.deepEqual((await fsp.readdir(dir)).sort(), ["existing.txt", "new.txt"]);
+  });
+}
+
+test("simultaneous no-hard-link saves cannot replace the winner", async (t) => {
+  const dir = await scratchDir(t, "save-no-hardlinks-race");
+  const target = path.join(dir, "result.txt");
+  t.mock.method(fsp, "link", async () => {
+    throw Object.assign(new Error("hard links unsupported by filesystem"), { code: "ENOTSUP" });
+  });
+  const baseUrl = await startServer(t, (url) => (res) => res.end(url === "/one" ? "FIRST" : "SECOND"));
+  const outcomes = await Promise.allSettled([
+    downloadToFile(`${baseUrl}/one`, target, { overwrite: false }),
+    downloadToFile(`${baseUrl}/two`, target, { overwrite: false })
+  ]);
+  const winner = outcomes.findIndex((result) => result.status === "fulfilled");
+  assert.notEqual(winner, -1);
+  assert.equal(outcomes[1 - winner].status, "rejected");
+  assert.match(outcomes[1 - winner].reason.message, /EEXIST/);
+  assert.equal(await fsp.readFile(target, "utf8"), winner === 0 ? "FIRST" : "SECOND");
+  assert.deepEqual(await fsp.readdir(dir), ["result.txt"]);
+});

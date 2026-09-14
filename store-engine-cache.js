@@ -8,7 +8,8 @@
 //     可用的旧版本缓存。
 // 准备过程持有跨 Worker/进程锁：复制到 <final>.staging → 按打包期清单校验
 // → 用最小 CSV 做真实 --convert-to pdf 并验证输出 → 写完成标记与验证收据
-// → 旧目录保留为 .previous-* 后发布新目录 → 成功后才清理旧副本/历史缓存。
+// → 旧目录保留为 .previous-* 后发布新目录 → 成功后才清理本事务旧副本。
+// 其他内容代际缓存可能正由另一个运行中的应用使用，准备操作不删除它们。
 // 发布失败恢复旧目录；恢复也失败时保留旧副本供下一次准备恢复与重新校验。
 // 任何一步失败都不得发布半成品；清单缺失/损坏的旧包和已有缓存也必须通过
 // 本次真实转换。有清单且文件快照完全未变时可复用上次真实转换的验证收据。
@@ -21,6 +22,7 @@ const path = require("path");
 const { execFileSync } = require("child_process");
 const { pathToFileURL } = require("url");
 const { Worker } = require("node:worker_threads");
+const { createOfficeWorkspace } = require("./office-runtime");
 
 const MANIFEST_FILE = "engine-integrity.json";
 const STAGING_SUFFIX = ".staging";
@@ -336,16 +338,16 @@ function verifyIntegrity(bundleDir, manifest) {
 // 真实冒烟：最小 CSV → PDF，实际解析一页 PDF 并验证 flyingmouse 和 42 两个单元格。
 // 同步实现仅在准备 worker 中运行；主进程先显示窗口。
 function defaultSmokeTest(sofficePath, options = {}) {
-  const { exec = execFileSync, timeoutMs = SMOKE_TIMEOUT_MS, tmpRoot } = options;
+  const { exec = executeSmokeNative, timeoutMs = SMOKE_TIMEOUT_MS, tmpRoot } = options;
   let workDir = null;
   try {
-    workDir = fs.mkdtempSync(path.join(tmpRoot || os.tmpdir(), "fm-engine-smoke-"));
+    const workspace = createOfficeWorkspace({ ...options, runtimeDir: tmpRoot || os.tmpdir() });
+    workDir = workspace.root;
     const inDir = path.join(workDir, "in");
     const outDir = path.join(workDir, "out");
-    const profileDir = path.join(workDir, "profile");
+    const profileDir = workspace.profileDir;
     fs.mkdirSync(inDir);
     fs.mkdirSync(outDir);
-    fs.mkdirSync(profileDir);
     const csvPath = path.join(inDir, "smoke.csv");
     fs.writeFileSync(csvPath, "name,value\nflyingmouse,42\n", "utf8");
     exec(
@@ -382,6 +384,15 @@ function defaultSmokeTest(sofficePath, options = {}) {
       catch { /* A locked temporary profile must not override the validation result. */ }
     }
   }
+}
+
+function executeSmokeNative(command, args, { timeout }) {
+  execFileSync(process.execPath, [path.join(__dirname, "office-smoke-runner.js"),
+    JSON.stringify({ command, args, timeout })], {
+    // The helper owns the native timeout and gets time to finish tree cleanup.
+    timeout: timeout + 15000, windowsHide: true, maxBuffer: 1024 * 1024,
+    env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" }, stdio: ["ignore", "pipe", "pipe"]
+  });
 }
 
 // 已发布缓存的接受判定：入口 + .complete + （有清单时）关键文件完整性。
@@ -461,21 +472,16 @@ function prepareWritableEngineBundle(options) {
     publishReplacement(enginesRoot, stagingDir, destBundle);
     discardPreviousBundles(enginesRoot, destBundle, log);
 
-    // 新缓存发布成功后才回收其余旧目录（含仍在用的历史版本；本次 bundle 除外）。
-    try {
-      for (const name of fs.readdirSync(enginesRoot)) {
-        if (name !== bundleName && !name.endsWith(STAGING_SUFFIX) && !name.includes(".previous-") && /^libreoffice(-|$)/.test(name)) {
-          removeCacheChild(enginesRoot, path.join(enginesRoot, name));
-        }
-      }
-    } catch {
-      // 旧缓存回收失败不影响本次启动（顶多占盘）。
-    }
+    // A preparation lock covers writers, not conversions in another app/version.
+    // Retain other content generations: deleting unlocked data files from an
+    // otherwise running native engine can break its next filter/document load.
     return { path: destSoffice, source: "published" };
   } catch (error) {
     // An interrupted publication has restored the old directory or retained it
     // under .previous-*. Never clean another owner's staging or a previous copy.
-    log("LibreOffice writable-engine preparation failed; using bundled path", error);
+    // The legacy return shape is retained for callers, but Office readiness
+    // rejects source=bundled. Do not tell diagnostics it is being executed.
+    log("LibreOffice writable-engine preparation failed; Office conversion remains unavailable", error);
     try {
       if (releaseLock) removeCacheChild(enginesRoot, stagingDir);
     } catch {

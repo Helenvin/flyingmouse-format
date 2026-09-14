@@ -6,9 +6,9 @@ const { after, before, test } = require("node:test");
 
 const runtimeDir = path.join(os.tmpdir(), `flyingmouse-text-integration-${process.pid}`);
 process.env.FLYINGMOUSE_RUNTIME_DIR = runtimeDir;
-// csv->pdf 走 LibreOffice html->pdf 管线；本机已安装版引擎存在时启用，否则跳过该断言。
+// csv->pdf 走 LibreOffice html->pdf 管线；使用当前配置的引擎，不绑定开发者安装目录。
 // 注意必须用 soffice.com（命令行壳）：portable 版 soffice.exe 会拉起 GUI 挂起，probe 超时。
-const candidateLo = "C:\\Users\\34615\\AppData\\Local\\Programs\\FlyingMouse Format\\resources\\libreoffice\\LibreOfficePortable\\App\\libreoffice\\program\\soffice.com";
+const candidateLo = require("../config").LIBREOFFICE_PATH;
 const LO_AVAILABLE = require("node:fs").existsSync(candidateLo);
 if (LO_AVAILABLE) process.env.FLYINGMOUSE_LIBREOFFICE_PATH = candidateLo;
 const { startServer, platformCapabilities } = require("../server");

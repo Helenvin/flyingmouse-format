@@ -872,6 +872,20 @@ ${body.join("\n")}
   return { warnings: [pdfLayoutFallbackWarning(fallbackReason), ...pdfOcrWarnings(completePages)] };
 }
 
+async function loadPdfForPageCopy(inputPath) {
+  // Inspect the encryption flag before touching/copying any page. pdf-lib cannot
+  // decrypt page streams, and copying them would silently publish ciphertext.
+  const document = await PDFDocument.load(await fsp.readFile(inputPath), { ignoreEncryption: true });
+  if (document.isEncrypted) {
+    const messages = {
+      zhCN: "PDF 已加密，请先使用正确密码解密，再合并或拆分。",
+      enUS: "This PDF is encrypted. Decrypt it with the correct password before merging or splitting."
+    };
+    throw Object.assign(new Error(messages.zhCN), { code: "PDF_ENCRYPTED_INPUT", messages });
+  }
+  return document;
+}
+
 async function splitPdfToZip(inputPath, outputPath, options = {}) {
   const mode = String(options.splitMode || "page");
   const groupSize = Math.max(1, Math.floor(Number(options.groupSize) || 1));
@@ -912,19 +926,25 @@ async function splitPdfToZip(inputPath, outputPath, options = {}) {
     return;
   }
 
-  // 回退：pdf-lib 逐页拆分（不依赖 qpdf）
-  const src = await PDFDocument.load(await fsp.readFile(inputPath), { ignoreEncryption: true });
+  // 回退：pdf-lib 使用同一分组大小（不依赖 qpdf）
+  const src = await loadPdfForPageCopy(inputPath);
   assertPdfPages(src.getPageCount());
   const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), "flyingmouse-pdf-split-"));
   try {
     const entries = [];
-    for (let index = 0; index < src.getPageCount(); index += 1) {
+    for (let index = 0; index < src.getPageCount(); index += splitPages) {
       const single = await PDFDocument.create();
-      const [page] = await single.copyPages(src, [index]);
-      single.addPage(page);
-      const pagePath = path.join(tempDir, `page-${String(index + 1).padStart(3, "0")}.pdf`);
+      const end = Math.min(index + splitPages, src.getPageCount());
+      const indices = Array.from({ length: end - index }, (_, offset) => index + offset);
+      const pages = await single.copyPages(src, indices);
+      pages.forEach((page) => single.addPage(page));
+      const startName = String(index + 1).padStart(3, "0");
+      const archiveName = splitPages > 1
+        ? `page-${startName}-${String(end).padStart(3, "0")}.pdf`
+        : `page-${startName}.pdf`;
+      const pagePath = path.join(tempDir, archiveName);
       await fsp.writeFile(pagePath, await single.save());
-      entries.push({ inputPath: pagePath, archiveName: `page-${String(index + 1).padStart(3, "0")}.pdf` });
+      entries.push({ inputPath: pagePath, archiveName });
     }
     if (!entries.length) {
       throw new Error("PDF 拆分失败，未生成任何页面。");
@@ -939,7 +959,7 @@ async function mergePdfFiles(pdfFiles, outputPath) {
   const merged = await PDFDocument.create();
   let totalPages = 0;
   for (const file of pdfFiles) {
-    const src = await PDFDocument.load(await fsp.readFile(file.inputPath), { ignoreEncryption: true });
+    const src = await loadPdfForPageCopy(file.inputPath);
     totalPages += src.getPageCount();
     assertPdfPages(totalPages);
     const pages = await merged.copyPages(src, src.getPageIndices());

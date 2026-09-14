@@ -191,3 +191,67 @@ test("mutation queue entry is cleaned up after the update settles", async (t) =>
   // 成功与失败的更新都不得在 Map 里留尾巴；两个不同路径 → 修复后 0 项。
   assert.equal(store._mutationChainsSize(), 0, "已结算的设置路径必须从队列 Map 清除");
 });
+
+test("EXDEV fallback preserves existing preferences after a partially written copy fails", async (t) => {
+  const scratch = await fsp.mkdtemp(path.join(os.tmpdir(), "fm-settings-copy-failure-"));
+  t.after(() => fsp.rm(scratch, { recursive: true, force: true }));
+  const settingsPath = path.join(scratch, "settings.json");
+  await updateSettings(settingsPath, { language: "en-US", theme: "dark", targetBySource: { pdf: "docx" } });
+  const before = await readSettings(settingsPath);
+  const rename = fsp.rename;
+  const copyFile = fsp.copyFile;
+  t.mock.method(fsp, "rename", async (source, destination) => {
+    if (destination === settingsPath) throw Object.assign(new Error("cross-device rename"), { code: "EXDEV" });
+    return rename(source, destination);
+  });
+  t.mock.method(fsp, "copyFile", async (source, destination, ...args) => {
+    if (destination === settingsPath) {
+      // A full disk / interrupted CopyFile may truncate or remove the old target.
+      // Also fail restoration to require durable recovery after process restart.
+      await fsp.writeFile(destination, '{"schemaVersion":');
+      throw Object.assign(new Error("disk full during copy"), { code: "ENOSPC" });
+    }
+    return copyFile(source, destination, ...args);
+  });
+  await assert.rejects(updateSettings(settingsPath, { language: "zh-CN" }), { code: "ENOSPC" });
+  assert.deepEqual(await readSettings(settingsPath), before, "copy failure must not reset all existing preferences");
+  await assert.rejects(updateSettings(settingsPath, { theme: "light" }), { code: "ENOSPC" });
+  assert.deepEqual(await readSettings(settingsPath), before, "retry must not overwrite the recovery with damaged settings");
+  assert.ok(!(await fsp.readdir(scratch)).some((name) => name.includes(".tmp-")));
+  t.mock.restoreAll();
+  await updateSettings(settingsPath, { language: "zh-CN" });
+  assert.deepEqual(await readSettings(settingsPath), { ...before, language: "zh-CN" });
+  assert.deepEqual(await fsp.readdir(scratch), ["settings.json"]);
+});
+
+test("EXDEV copy succeeds and does not leave a recovery file", async (t) => {
+  const scratch = await fsp.mkdtemp(path.join(os.tmpdir(), "fm-settings-cross-device-"));
+  t.after(() => fsp.rm(scratch, { recursive: true, force: true }));
+  const settingsPath = path.join(scratch, "settings.json");
+  await updateSettings(settingsPath, { language: "en-US", theme: "dark" });
+  t.mock.method(fsp, "rename", async () => {
+    throw Object.assign(new Error("cross-device rename"), { code: "EXDEV" });
+  });
+  await updateSettings(settingsPath, { language: "zh-CN" });
+  assert.equal((await readSettings(settingsPath)).language, "zh-CN");
+  assert.equal((await readSettings(settingsPath)).theme, "dark");
+  assert.deepEqual(await fsp.readdir(scratch), ["settings.json"]);
+});
+
+test("EXDEV refuses to overwrite valid settings if creating the recovery copy fails", async (t) => {
+  const scratch = await fsp.mkdtemp(path.join(os.tmpdir(), "fm-settings-backup-failure-"));
+  t.after(() => fsp.rm(scratch, { recursive: true, force: true }));
+  const settingsPath = path.join(scratch, "settings.json");
+  await updateSettings(settingsPath, { language: "en-US", theme: "dark" });
+  const before = await fsp.readFile(settingsPath);
+  t.mock.method(fsp, "rename", async () => {
+    throw Object.assign(new Error("cross-device rename"), { code: "EXDEV" });
+  });
+  t.mock.method(fsp, "copyFile", async (_source, destination) => {
+    assert.equal(destination, `${settingsPath}.recovery`, "must back up before overwriting the settings file");
+    throw Object.assign(new Error("backup permission denied"), { code: "EACCES" });
+  });
+  await assert.rejects(updateSettings(settingsPath, { language: "zh-CN" }), { code: "EACCES" });
+  assert.deepEqual(await fsp.readFile(settingsPath), before);
+  assert.deepEqual(await fsp.readdir(scratch), ["settings.json"]);
+});

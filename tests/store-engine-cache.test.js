@@ -70,7 +70,7 @@ test("incomplete source bundle (entry present, key file missing) is NEVER publis
   assert.ok(!fs.existsSync(`${path.join(enginesRoot, "libreoffice-9.9.9")}.staging`), "staging 必须被清理");
 });
 
-test("staging + integrity + smoke all pass, then publish; old caches reclaimed only after", async (t) => {
+test("staging + integrity + smoke all pass, then publish without deleting another app generation", async (t) => {
   const rel = (p) => p.split(path.sep).join("/");
   const entryRel = rel(`${LO_SUB}/soffice.com`);
   const { root, bundle } = await makeBundle(t, "src-ok");
@@ -101,7 +101,8 @@ test("staging + integrity + smoke all pass, then publish; old caches reclaimed o
   assert.equal(smokeCalls.length, 1, "冒烟必须执行一次");
   assert.ok(smokeCalls[0].includes(".staging"), "冒烟必须在 staging 目录跑（发布前）");
   assert.ok(fs.existsSync(path.join(enginesRoot, "libreoffice-9.9.9", ".complete")));
-  assert.ok(!fs.existsSync(oldCache), "发布成功后旧版本缓存被回收");
+  assert.equal(fs.readFileSync(path.join(oldCache, "marker"), "utf8"), "old",
+    "a different running application may still need this generation's unloaded engine files");
 });
 
 test("failed smoke leaves no published cache and does NOT touch old caches", async (t) => {
@@ -175,6 +176,21 @@ test("real configured engine smoke: minimal CSV converts to a valid PDF", async 
   if (!real || !fs.existsSync(real)) return t.skip("当前配置未提供 LibreOffice 引擎，跳过真实冒烟");
   const outcome = defaultSmokeTest(real, {});
   assert.ok(outcome.ok, `真实引擎冒烟失败: ${outcome.reason}`);
+});
+
+test("Store smoke succeeds with a deep TEMP path by keeping native profile and input short", async (t) => {
+  const { defaultSmokeTest } = require("../store-engine-cache");
+  const { LIBREOFFICE_PATH: real } = require("../config");
+  if (!real || !fs.existsSync(real)) return t.skip("当前配置未提供 LibreOffice 引擎");
+  const root = await fsp.mkdtemp(path.join(os.tmpdir(), "fm-deep-smoke-"));
+  t.after(() => fsp.rm(root, { recursive: true, force: true }));
+  const tmpRoot = path.join(root, "nested-".repeat(27));
+  const fallback = path.join(root, "local");
+  fs.mkdirSync(tmpRoot);
+  const outcome = defaultSmokeTest(real, { tmpRoot, profileFallbackRoot: fallback });
+  assert.equal(outcome.ok, true, outcome.reason);
+  assert.deepEqual(fs.readdirSync(tmpRoot), []);
+  assert.deepEqual(fs.readdirSync(fallback), []);
 });
 
 test("readManifest tolerates missing/corrupt manifest files", async (t) => {

@@ -84,6 +84,20 @@ test("overwrite false preserves existing Markdown and cleans only newly created 
   assert.deepEqual(await fs.readdir(root), ["saved.md"]);
 });
 
+test("batch Markdown save retains its resources on filesystems without hard links", async (t) => {
+  const { root, result } = await fixture(t);
+  t.mock.method(fs, "link", async () => {
+    throw Object.assign(new Error("hard links unsupported"), { code: "ENOTSUP" });
+  });
+  const target = path.join(root, "saved.md");
+  const saved = await saveConvertedResult(result, target, { overwrite: false });
+  const markdown = await fs.readFile(target, "utf8");
+  const reference = markdown.match(/\]\(([^)]+)\)/)[1];
+  assert.equal(path.dirname(path.join(root, reference)), saved.assetsDirectory);
+  assert.equal(await fs.readFile(path.join(root, reference), "utf8"), "PNG IMAGE");
+  assert.ok(!(await fs.readdir(root)).some((name) => name.endsWith(".partial")));
+});
+
 test("saving literal attachment examples preserves their complete UTF-8 bytes", async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "fm-save-code-"));
   t.after(() => fs.rm(root, { recursive: true, force: true }));

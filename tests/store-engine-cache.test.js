@@ -190,7 +190,10 @@ test("Store smoke succeeds with a deep TEMP path by keeping native profile and i
   const outcome = defaultSmokeTest(real, { tmpRoot, profileFallbackRoot: fallback });
   assert.equal(outcome.ok, true, outcome.reason);
   assert.deepEqual(fs.readdirSync(tmpRoot), []);
-  assert.deepEqual(fs.readdirSync(fallback), []);
+  // Windows rejects the long native profile path; POSIX may use tmpRoot and
+  // never create the fallback. Any fallback that was used must be cleaned.
+  if (process.platform === "win32") assert.ok(fs.existsSync(fallback));
+  if (fs.existsSync(fallback)) assert.deepEqual(fs.readdirSync(fallback), []);
 });
 
 test("readManifest tolerates missing/corrupt manifest files", async (t) => {

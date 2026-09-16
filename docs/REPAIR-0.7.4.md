@@ -21,6 +21,8 @@
 
 源码版本和本地 MSIX 构建均不代表已在微软商店上架；未执行 Partner Center 提交、认证或公开发布。本轮不生成或发布公开 NSIS、Win7 和 macOS 安装包。Win7 使用原独立启动路径，macOS 跳过 Windows 原生入口。
 
+首轮 GitHub CI 的 Windows 与 macOS arm64 通过；Intel macOS 唯一失败项是旧临时目录测试使用固定 PID 1111，无法保证它在 runner 上已退出。测试夹具现改为真实启动并正常退出的两个子进程 PID，原活动进程及目录边界保护均保留。相关 7 项测试通过；该后续提交只修改测试和记录，商店包运行代码不变，远程结果需按修复后的提交复核。
+
 ## 构建
 
 安装 MSVC x64 工具和 Windows SDK。脚本优先使用 `FLYINGMOUSE_VCVARS_PATH` 或已有 VS 环境，否则通过 `vswhere` 查找。执行 `npm run dist:appx` 默认整体构建后产出 unsigned MSIX；仅在独立验证过本次完整构建时使用 `-SkipBuild -WinUnpackedPath`。外部 builder 配置必须显式继承 `package.json.build`，包括白名单与 `afterSign`，不能依赖自动合并。

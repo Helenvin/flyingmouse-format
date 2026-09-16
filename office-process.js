@@ -16,8 +16,10 @@ function defaultExecutor(command, args, options = {}) {
     const child = spawn(command, args, {
       windowsHide: true,
       detached: process.platform !== "win32",
-      stdio: ["ignore", "pipe", "pipe"]
+      stdio: ["pipe", "pipe", "pipe"]
     });
+    child.stdin?.on("error", () => {});
+    child.stdin?.end();
 
     function finish(error) {
       if (settled) return;

@@ -10,13 +10,13 @@ param(
     [string]$MaxVersionTested = '10.0.26100.0'
 )
 
-# Every run owns a new layout under dist. Existing APPX packages, source engines
+# Every run owns a new layout under dist. Existing MSIX/APPX packages, source engines
 # and previous layouts are preserved. Reserved OPC names are changed in the copy
 # only; app.asar is never replaced inside a previously built Electron executable.
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) {
-    throw 'APPX packaging requires Windows and the Windows SDK.'
+    throw 'MSIX/APPX packaging requires Windows and the Windows SDK.'
 }
 
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
@@ -37,11 +37,13 @@ if ([string]::IsNullOrWhiteSpace($productName) -or $productName.IndexOfAny([IO.P
     throw 'Invalid build.productName in package.json.'
 }
 $executableName = "$productName.exe"
+$runtimeName = "$productName Runtime.exe"
 $distRoot = Join-Path $repoRoot 'dist'
-if (-not $OutputPath) { $OutputPath = Join-Path $distRoot "$productName-$releaseVersion-x64-unsigned.appx" }
+if (-not $OutputPath) { $OutputPath = Join-Path $distRoot "$productName-$releaseVersion-x64-unsigned.msix" }
 if (-not [IO.Path]::IsPathRooted($OutputPath)) { $OutputPath = Join-Path $repoRoot $OutputPath }
 $finalOutput = [IO.Path]::GetFullPath($OutputPath)
-if ([IO.Path]::GetExtension($finalOutput) -ne '.appx') { throw 'OutputPath must end in .appx.' }
+$packageExtension = [IO.Path]::GetExtension($finalOutput).ToLowerInvariant()
+if ($packageExtension -notin @('.appx', '.msix')) { throw 'OutputPath must end in .msix or .appx.' }
 if (Test-Path -LiteralPath $finalOutput) { throw "Output already exists; choose another OutputPath: $finalOutput" }
 if (-not (Test-Path -LiteralPath $MakeAppxPath -PathType Leaf)) { throw "MakeAppx was not found: $MakeAppxPath" }
 if (-not $PythonPath) {
@@ -114,13 +116,20 @@ $unpackedRoot = [IO.Path]::GetFullPath($WinUnpackedPath)
 Assert-RealDirectory $unpackedRoot
 $asarReference = Join-Path $unpackedRoot 'resources\app.asar'
 $exeReference = Join-Path $unpackedRoot $executableName
-foreach ($required in @($asarReference, $exeReference)) {
+$runtimeReference = Join-Path $unpackedRoot $runtimeName
+foreach ($required in @($asarReference, $exeReference, $runtimeReference)) {
     if (-not (Test-Path -LiteralPath $required -PathType Leaf)) { throw "Incomplete win-unpacked: $required" }
 }
-$exeVersion = [Diagnostics.FileVersionInfo]::GetVersionInfo($exeReference).ProductVersion
-if ($exeVersion -ne $releaseVersion -and $exeVersion -ne $appxVersion) {
-    throw "Executable version $exeVersion differs from package.json $releaseVersion. Rebuild the whole application."
+$executableVersions = [ordered]@{}
+foreach ($reference in @($exeReference, $runtimeReference)) {
+    $exeVersion = [Diagnostics.FileVersionInfo]::GetVersionInfo($reference).ProductVersion
+    if ($exeVersion -ne $releaseVersion -and $exeVersion -ne $appxVersion) {
+        throw "Executable $reference version $exeVersion differs from package.json $releaseVersion. Rebuild the whole application."
+    }
+    $executableVersions[[IO.Path]::GetFileName($reference)] = $exeVersion
 }
+$publicCheckNode = Get-Command node -ErrorAction Stop
+Invoke-CheckedNative $publicCheckNode.Source @((Join-Path $PSScriptRoot 'check-public-package.js'), $unpackedRoot, $releaseVersion)
 # Node's filesystem APIs handle long packaged Python paths that PowerShell's
 # recursive provider can reject with DirectoryNotFound above MAX_PATH.
 $treeCheck = @'
@@ -214,10 +223,11 @@ $languages
 
 Invoke-CheckedNative $PythonPath @('-X', 'utf8', (Join-Path $PSScriptRoot 'rename-opc-reserved.py'), $appRoot)
 Invoke-CheckedNative $PythonPath @('-X', 'utf8', (Join-Path $PSScriptRoot 'scan-pe-cert-dangling.py'), $layoutRoot)
-$stagedPackage = Join-Path $stageRoot "$productName-$releaseVersion-x64-unsigned.appx"
-Invoke-CheckedNative $MakeAppxPath @('pack', '/d', $layoutRoot, '/p', $stagedPackage)
+$stagedPackage = Join-Path $stageRoot "$productName-$releaseVersion-x64-unsigned$packageExtension"
+Invoke-CheckedNative $MakeAppxPath @('pack', '/h', 'SHA256', '/d', $layoutRoot, '/p', $stagedPackage)
 Invoke-CheckedNative $PythonPath @('-X', 'utf8', (Join-Path $PSScriptRoot 'check-appx.py'), $stagedPackage, $asarReference,
-    '--version', $appxVersion, '--identity', [string]$appxConfig.identityName, '--publisher', [string]$appxConfig.publisher)
+    '--version', $appxVersion, '--identity', [string]$appxConfig.identityName, '--publisher', [string]$appxConfig.publisher,
+    '--launcher-reference', $exeReference, '--runtime-reference', $runtimeReference)
 
 # Publish through a unique file in the destination directory, so cross-volume
 # OutputPath values still get a complete, same-volume, no-overwrite final move.
@@ -235,6 +245,9 @@ $evidence = [ordered]@{
     publisher = [string]$appxConfig.publisher; architecture = 'x64'; unsigned = $true
     package = $finalOutput; sha256 = $packageHash; stage = $stageRoot
     rebuiltApplication = $unpackedRoot; asarSha256 = (Get-FileHash -LiteralPath $asarReference -Algorithm SHA256).Hash
+    packageFormat = $packageExtension.TrimStart('.'); executableVersions = $executableVersions
+    launcherSha256 = (Get-FileHash -LiteralPath $exeReference -Algorithm SHA256).Hash
+    runtimeSha256 = (Get-FileHash -LiteralPath $runtimeReference -Algorithm SHA256).Hash
 }
 [IO.File]::WriteAllText((Join-Path $stageRoot 'build-evidence.json'), ($evidence | ConvertTo-Json -Depth 4), [Text.UTF8Encoding]::new($false))
 Write-Host "APPX_PATH=$finalOutput"

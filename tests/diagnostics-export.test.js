@@ -29,7 +29,7 @@ async function fixture(t) {
     mainWindow: {}, dialog: { showSaveDialog: async () => ({ canceled: false, filePath: destination }) },
     logger: { getLogFile: () => path.join(root, "debug.log") },
     serverRuntime: { getToolDiagnostics: async () => ({}) },
-    app: { getPath: () => root, getVersion: () => "test" },
+    app: { getPath: () => root, getVersion: () => "test", commandLine: { hasSwitch: () => true } },
     packageType: () => "test", buildDiagnosticsReport, log: () => {}
   });
   return { root, destination, settingsPath, exportReport: () => handler({}) };

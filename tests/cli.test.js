@@ -10,6 +10,17 @@ const {
   sanitizeJsonError
 } = require("../cli");
 
+test("CLI accepts leading help flags with successful output and no conversion service", () => {
+  for (const args of [[], ["--help"], ["-h"], ["convert", "--help"]]) {
+    const result = spawnSync(process.execPath, [path.join(__dirname, "..", "cli.js"), ...args], {
+      encoding: "utf8", timeout: 10000
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /^FlyingMouse Format CLI/);
+    assert.doesNotMatch(result.stderr, /requires at least|Unknown command|Server started/);
+  }
+});
+
 test("CLI parses conversion, merge, JSON, and engine options", () => {
   const parsed = parseCliArgs([
     "convert", "一.txt", "二.txt", "--to", "md", "--output-dir", "out",

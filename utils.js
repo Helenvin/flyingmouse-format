@@ -45,7 +45,10 @@ function ensureDirs() {
 
 function run(command, args, options = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { shell: false, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(command, args, { shell: false, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
+    // EOF through a pipe avoids libuv opening the Windows NUL device.
+    child.stdin?.on("error", () => {});
+    child.stdin?.end();
     const stdoutLimit = options.maxStdoutBytes || 16 * 1024 * 1024;
     const stderrLimit = 128 * 1024;
     const stdoutChunks = [];

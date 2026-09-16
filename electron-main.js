@@ -64,6 +64,16 @@ function createWindow(url) {
     }
   });
 
+  if (process.platform === "win32" && app.isPackaged && !process.windowsStore) {
+    const launcher = currentCliLauncher().executable;
+    mainWindow.setAppDetails({
+      appId: "com.flyingmouse.format",
+      appIconPath: launcher,
+      relaunchCommand: `"${launcher}"`,
+      relaunchDisplayName: "FlyingMouse Format"
+    });
+  }
+
   mainWindow.webContents.on("will-navigate", (event, navigationUrl) => {
     if (isTrustedRendererUrl(navigationUrl, serverUrl)) return;
     event.preventDefault();
@@ -167,6 +177,7 @@ async function boot() {
     log("Second instance launched; focusing existing window");
     if (mainWindow && !mainWindow.isDestroyed()) {
       if (mainWindow.isMinimized()) mainWindow.restore();
+      if (!mainWindow.isVisible()) mainWindow.show();
       mainWindow.focus();
     }
   });
@@ -189,8 +200,10 @@ function bundledSkillSource() {
 }
 
 function currentCliLauncher() {
+  const bootstrap = path.join(path.dirname(process.execPath), "FlyingMouse Format.exe");
   return {
-    executable: process.execPath,
+    executable: app.isPackaged && process.platform === "win32" && fs.existsSync(bootstrap)
+      ? bootstrap : process.execPath,
     args: app.isPackaged ? [] : [app.getAppPath()]
   };
 }
@@ -306,6 +319,7 @@ ipcMain.handle("export-diagnostics", async (event) => {
     release: os.release(),
     arch: process.arch,
     packageType: packageType(),
+    noStdioInit: app.commandLine.hasSwitch("no-stdio-init"),
     engines,
     logText,
     userHome: os.homedir(),
@@ -424,7 +438,7 @@ app.disableHardwareAcceleration();
 // 模块（sharp/ffmpeg/LibreOffice 子进程），不受此限制影响。
 app.commandLine.appendSwitch("js-flags", "--max-old-space-size=1024");
 
-if (process.platform === "win32") {
+if (process.platform === "win32" && !process.windowsStore) {
   app.setAppUserModelId("com.flyingmouse.format");
 }
 

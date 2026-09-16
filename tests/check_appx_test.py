@@ -20,21 +20,29 @@ class CheckAppxTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory(prefix="fm-appx-check-")
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
-        self.reference = self.root / "app.asar"
+        (self.root / "resources").mkdir()
+        self.reference = self.root / "resources" / "app.asar"
         self.reference.write_bytes(b"rebuilt source")
+        self.launcher_reference = self.root / "FlyingMouse.exe"
+        self.runtime_reference = self.root / "FlyingMouse Runtime.exe"
+        self.launcher_reference.write_bytes(b"MZ native bootstrap")
+        self.runtime_reference.write_bytes(b"MZ Electron runtime")
         self.package = self.root / "fixture.appx"
         self.expected = {"version": "0.7.0.0", "identity": "FlyingMouse.Test", "publisher": "CN=Test"}
 
-    def build(self, *, identity="FlyingMouse.Test", publisher="CN=Test", version="0.7.0.0", architecture="x64", omit=(), extra=(), asar=b"rebuilt source"):
+    def build(self, *, identity="FlyingMouse.Test", publisher="CN=Test", version="0.7.0.0", architecture="x64", omit=(), extra=(), asar=b"rebuilt source", launcher=b"MZ native bootstrap", runtime=b"MZ Electron runtime", executable=None):
+        executable = executable or self.launcher_reference.name
         manifest = f'''<?xml version="1.0" encoding="utf-8"?>
 <Package xmlns="{CHECK.PACKAGE_NAMESPACE}">
   <Identity Version='{version}'
       Publisher="{publisher}" ProcessorArchitecture='{architecture}'
       Name='{identity}' />
-  <Applications><Application Id="FlyingMouse" Executable="app\\FlyingMouse.exe" /></Applications>
+  <Applications><Application Id="FlyingMouse" Executable="app\\{executable}" /></Applications>
 </Package>'''
         entries = [("[Content_Types].xml", "types"), ("AppxManifest.xml", manifest),
-                   ("AppxBlockMap.xml", "blockmap"), ("app/resources/app.asar", asar), ("app/FlyingMouse.exe", b"MZ")]
+                   ("AppxBlockMap.xml", "blockmap"), ("app/resources/app.asar", asar),
+                   (f"app/{self.launcher_reference.name}", launcher),
+                   (f"app/{self.runtime_reference.name}", runtime)]
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", UserWarning)
             with zipfile.ZipFile(self.package, "w") as archive:
@@ -43,12 +51,15 @@ class CheckAppxTests(unittest.TestCase):
                         archive.writestr(name, content)
 
     def verify(self):
-        return CHECK.verify_package(self.package, self.reference, **self.expected)
+        return CHECK.verify_package(self.package, self.reference, launcher_reference=self.launcher_reference,
+                                    runtime_reference=self.runtime_reference, **self.expected)
 
     def run_checker(self):
-        return subprocess.run([sys.executable, str(SCRIPT), str(self.package), str(self.reference),
+        return subprocess.run([sys.executable, "-X", "utf8", str(SCRIPT), str(self.package), str(self.reference),
                                "--version", self.expected["version"], "--identity", self.expected["identity"],
-                               "--publisher", self.expected["publisher"]], capture_output=True, text=True, encoding="utf-8")
+                               "--publisher", self.expected["publisher"],
+                               "--launcher-reference", str(self.launcher_reference),
+                               "--runtime-reference", str(self.runtime_reference)], capture_output=True, text=True, encoding="utf-8")
 
     def test_valid_multiline_identity_and_mixed_quotes(self):
         self.build()
@@ -56,17 +67,55 @@ class CheckAppxTests(unittest.TestCase):
         self.assertEqual(self.run_checker().returncode, 0)
 
     def test_makeappx_opc_encoded_spaces_match_the_manifest_executable(self):
+        self.launcher_reference = self.launcher_reference.rename(self.root / "Flying Mouse.exe")
+        self.runtime_reference = self.runtime_reference.rename(self.root / "Flying Mouse Runtime.exe")
         self.build()
         with zipfile.ZipFile(self.package) as archive:
             entries = [(entry.filename, archive.read(entry)) for entry in archive.infolist()]
         with zipfile.ZipFile(self.package, "w") as archive:
             for name, content in entries:
-                if name == "AppxManifest.xml":
-                    content = content.replace(b"FlyingMouse.exe", b"Flying Mouse.exe")
-                if name == "app/FlyingMouse.exe":
-                    name = "app/Flying%20Mouse.exe"
+                name = name.replace(" ", "%20")
                 archive.writestr(name, content)
         self.assertTrue(self.verify()["ok"])
+
+    def test_msix_container_has_matching_bootstrap_runtime_pair(self):
+        self.package = self.root / "fixture.msix"
+        self.build()
+        result = self.verify()
+        self.assertTrue(result["ok"])
+        for role in ("launcher", "runtime"):
+            self.assertEqual(result[role]["packagedSha256"], result[role]["referenceSha256"])
+        self.assertNotEqual(result["launcher"]["referenceSha256"], result["runtime"]["referenceSha256"])
+        self.assertEqual(self.run_checker().returncode, 0)
+
+    def test_missing_or_changed_runtime_is_rejected(self):
+        self.build(omit=("app/FlyingMouse Runtime.exe",))
+        self.assertFalse(self.verify()["ok"])
+        self.build(runtime=b"MZ stale Electron runtime")
+        self.assertFalse(self.verify()["ok"])
+        self.assertNotEqual(self.run_checker().returncode, 0)
+
+    def test_changed_launcher_is_rejected_even_when_runtime_and_asar_match(self):
+        self.build(launcher=b"MZ stale bootstrap")
+        self.assertFalse(self.verify()["ok"])
+        self.assertNotEqual(self.run_checker().returncode, 0)
+
+    def test_manifest_cannot_bypass_launcher(self):
+        self.build(executable=self.runtime_reference.name)
+        self.assertFalse(self.verify()["ok"])
+        self.assertNotEqual(self.run_checker().returncode, 0)
+
+    def test_missing_reference_runtime_fails_closed(self):
+        self.build()
+        self.runtime_reference.unlink()
+        result = self.run_checker()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(json.loads(result.stdout)["ok"])
+
+    def test_same_binary_cannot_be_used_as_launcher_and_runtime(self):
+        self.runtime_reference.write_bytes(self.launcher_reference.read_bytes())
+        self.build(runtime=self.launcher_reference.read_bytes())
+        self.assertNotEqual(self.run_checker().returncode, 0)
 
     def test_bundled_runtime_python_bytecode_is_allowed(self):
         self.build(extra=(("app/resources/libreoffice/program/__pycache__/uno.cpython-312.pyc", b"bundled runtime"),))
@@ -136,9 +185,9 @@ class CheckAppxTests(unittest.TestCase):
     def test_repository_defaults_are_loaded(self):
         self.build()
         manifest = self.root / "package.json"
-        manifest.write_text(json.dumps({"version": "0.7.0", "build": {"appx": {
+        manifest.write_text(json.dumps({"version": "0.7.0", "build": {"productName": "FlyingMouse", "appx": {
             "identityName": "FlyingMouse.Test", "publisher": "CN=Test"}}}), encoding="utf-8")
-        command = [sys.executable, str(SCRIPT), str(self.package), str(self.reference), "--package-json", str(manifest)]
+        command = [sys.executable, "-X", "utf8", str(SCRIPT), str(self.package), str(self.reference), "--package-json", str(manifest)]
         self.assertEqual(subprocess.run(command, capture_output=True).returncode, 0)
         manifest.write_text("{}", encoding="utf-8")
         self.assertNotEqual(subprocess.run(command, capture_output=True).returncode, 0)

@@ -44,7 +44,8 @@ License: Non-Commercial — personal use only. Commercial resale or rebranding i
 
 function parseCliArgs(argv) {
   const args = [...argv];
-  const command = args.shift() || "help";
+  const first = args.shift();
+  const command = !first || first === "--help" || first === "-h" ? "help" : first;
   const files = [];
   const options = { json: false, help: false };
 

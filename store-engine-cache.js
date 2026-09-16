@@ -373,7 +373,7 @@ function defaultSmokeTest(sofficePath, options = {}) {
     // verify the actual CSV cells in a separate bounded process.
     execFileSync(process.execPath, [path.join(__dirname, "engine-smoke-validator.js"), pdfPath], {
       timeout: Math.min(timeoutMs, 30000), windowsHide: true, maxBuffer: 1024 * 1024,
-      env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" }, stdio: ["ignore", "pipe", "pipe"]
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" }, input: Buffer.alloc(0), stdio: ["pipe", "pipe", "pipe"]
     });
     return { ok: true };
   } catch (error) {
@@ -391,7 +391,7 @@ function executeSmokeNative(command, args, { timeout }) {
     JSON.stringify({ command, args, timeout })], {
     // The helper owns the native timeout and gets time to finish tree cleanup.
     timeout: timeout + 15000, windowsHide: true, maxBuffer: 1024 * 1024,
-    env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" }, stdio: ["ignore", "pipe", "pipe"]
+    env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" }, input: Buffer.alloc(0), stdio: ["pipe", "pipe", "pipe"]
   });
 }
 

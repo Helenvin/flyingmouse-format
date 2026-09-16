@@ -93,6 +93,8 @@ function buildDiagnosticsReport(input = {}) {
     `App version: ${safeField(input.appVersion)}`,
     `OS: ${safeField(input.platform)} ${safeField(input.release)} ${safeField(input.arch)}`,
     `Package: ${safeField(input.packageType)}`,
+    `Compatible startup: ${input.noStdioInit === true}`,
+    "Author: 牢蜂 (LaoFeng)",
     "License: Non-Commercial. Commercial resale or rebranding is prohibited.",
     "Notice: This software supports only ordinary audio format conversion and does not support encrypted special formats from any music platform. Please support the artists.",
     "",

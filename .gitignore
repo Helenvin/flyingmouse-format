@@ -4,6 +4,7 @@ runtime/
 dist/
 test-results/
 output/
+work/
 .playwright-cli/
 bin/*
 !bin/avs3/

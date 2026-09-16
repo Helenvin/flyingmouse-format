@@ -7,7 +7,8 @@ const STAGING_EXCLUDED_TESTS = new Set([
   "tests/win7-build-script.test.js",
   "tests/pe-metadata.test.js",
   "tests/build-engine-manifest.test.js",
-  "tests/pandoc-engine.test.js"
+  "tests/pandoc-engine.test.js",
+  "tests/public-package.test.js"
 ]);
 
 const REQUIRED_RUNTIME_FILES = [
@@ -130,6 +131,8 @@ function createWin7Package(basePackage, projectRoot) {
   profile.build.win.target = ["nsis"];
   delete profile.build.appx;
   delete profile.build.beforePack;
+  // Electron 22 uses its independently validated legacy startup path.
+  delete profile.build.afterSign;
   // Python-backed docengine and docstructure runtimes are excluded from Win7;
   // their JavaScript boundary modules remain available for static imports.
   profile.build.extraResources = profile.build.win.extraResources

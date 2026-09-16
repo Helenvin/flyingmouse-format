@@ -4,7 +4,7 @@
 
 FlyingMouse Format（飞鼠格式）是 Windows Electron 离线文件转换器。主产品必须使用原版鼠鼠 UI；它与“鼠鼠打印”是两个独立项目，禁止跨项目修改或混合发布物。
 
-当前技术栈：Electron 43、Windows 10/11 x64、鼠鼠 UI、中英文切换、批量转换、偏好与保存目录记忆。PDF 按原生/扫描内容分流，见 [架构](docs/ARCHITECTURE.md)；OFD 仅通过 `ofd-convert.js` 转 PDF，不走 LibreOffice。Windows 7 SP1 x64 只通过独立 staging 派生 Electron 22.3.27，禁止降低根 manifest 的主线依赖。当前候选与发布状态以 [0.7.3 修复说明](docs/REPAIR-0.7.3.md) 为准，不能从源码版本推断已安装或已发布版本。
+当前技术栈：Electron 43、Windows 10/11 x64、鼠鼠 UI、中英文切换、批量转换、偏好与保存目录记忆。PDF 按原生/扫描内容分流，见 [架构](docs/ARCHITECTURE.md)；OFD 仅通过 `ofd-convert.js` 转 PDF，不走 LibreOffice。Windows 7 SP1 x64 只通过独立 staging 派生 Electron 22.3.27，禁止降低根 manifest 的主线依赖。当前候选与发布状态以 [0.7.4 修复说明](docs/REPAIR-0.7.4.md) 为准，不能从源码版本推断已安装或已发布版本。
 
 ## Source map
 
@@ -109,6 +109,7 @@ npm audit --omit=dev --prefix output\win7-stage
 - Store settings 写入必须保留 `settings-store.js` 的 `EXDEV` 跨卷回退，同卷仍用原子 rename。
 - Store Office 缓存位于 `%LOCALAPPDATA%\FlyingMouseFormat\engines\libreoffice-<内容标识>`；先显示窗口，再在 Worker 复制、校验与验证。只有 Office 任务等待，失败要可诊断；仅复用与内容及验证收据相符的缓存。见 [架构](docs/ARCHITECTURE.md)。
 - 改动包内内容后必须整体重建 EXE 与 ASAR（完整性哈希绑定），不能只替换 ASAR；签名包需重签名。源码说明更新不等于现有安装包已重建。见 [发布流程](docs/RELEASE.md)。
+- Windows 10/11 x64 使用 `native/launcher.cpp` 兼容启动入口；`afterSign` 完成原 Electron EXE 的 ASAR 绑定后，将其改名为 `FlyingMouse Format Runtime.exe`，再安装主入口。禁止在 `afterPack` 提前替换。需要 MSVC x64/Windows SDK；Win7 派生禁用该 hook，macOS 跳过。Store 打包同时验证入口、Runtime、ASAR 和公开功能边界。
 - 发布前必须检查：完整测试、当前能力表中实际支持格式的真实转换样本、`npm audit --omit=dev`、ASAR 文件、引擎资源、EXE 产品版本、安装包 SHA-256、鼠鼠内嵌图标、桌面快捷方式、GitHub 资产摘要。AV3A 和平台加密音频不在当前输入能力表内；遗留 AVS3 资源或环境变量不能作为转换支持的证据，不得沿用已移除路径的 AV3A 发布门槛。
 - `dist/win-unpacked` 是本机开发/验收入口；公开交付使用 Release 安装包。
 - Win7 构建只允许使用 Node.js 18–22（推荐 22 LTS）和专用 `win7-package-lock.json` 经 `npm ci` 重建 `output/win7-stage/`；子进程必须绑定当前 Node，源码复制须兼容 Unicode 路径。产物写入精确的 `dist/FlyingMouse Format-Setup-<version>-win7-x64.exe`；脚本必须锁定 staging manifest/lockfile，校验本地 builder 与 `extraResources` 各自在允许根目录内的 canonical containment 并拒绝 reparse point；测试可以清理 staging，不得覆盖标准安装包或移动既有版本标签。
@@ -121,7 +122,7 @@ npm audit --omit=dev --prefix output\win7-stage
 - `README.md`：面向用户的中英文介绍、下载与格式范围。
 - `docs/ARCHITECTURE.md`：运行架构、状态和数据边界。
 - `docs/RELEASE.md`：本机测试、打包、桌面同步与 GitHub 发布清单。
-- `docs/HANDOFF.md`：恢复工作入口；候选状态与剩余风险指向 `docs/REPAIR-0.7.3.md`。
+- `docs/HANDOFF.md`：恢复工作入口；候选状态与剩余风险指向 `docs/REPAIR-0.7.4.md`。
 - `docs/privacy-policy.html`：面向用户和 Microsoft Store 的隐私政策。
 - `docs/微软商店上架清单.md`、`docs/上架材料包.md`：商店渠道资料；外部审核状态必须写绝对日期并注明是否已现场复核。
 

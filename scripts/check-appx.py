@@ -1,7 +1,8 @@
-"""Verify an unsigned x64 Store APPX and exit nonzero on any failed check.
+"""Verify an unsigned x64 Store MSIX/APPX and exit nonzero on any failed check.
 
 python scripts/check-appx.py package.appx dist/win-unpacked/resources/app.asar
 Optional --version, --identity and --publisher default to repository package.json.
+Launcher and Runtime references default to the rebuilt application beside resources.
 Local validation does not establish Microsoft Store certification.
 """
 import argparse
@@ -63,13 +64,27 @@ def parse_manifest(data):
     return root, identities[0]
 
 
-def verify_package(package, asar_reference, *, version, identity, publisher):
+def verify_package(package, asar_reference, *, version, identity, publisher,
+                   launcher_reference, runtime_reference):
     errors = []
     evidence = {"package": str(package), "expectedVersion": version}
     if not re.fullmatch(r"\d+\.\d+\.\d+\.\d+", version) or any(int(part) > 65535 for part in version.split(".")):
         raise ValueError("Expected APPX version must contain four integers between 0 and 65535")
     if not identity or not publisher:
         raise ValueError("Expected Identity and Publisher must be provided")
+    references = {"launcher": Path(launcher_reference), "runtime": Path(runtime_reference)}
+    if references["launcher"].suffix.casefold() != ".exe" or references["runtime"].name.casefold() != (
+        references["launcher"].stem + " Runtime.exe"
+    ).casefold():
+        raise ValueError("Expected a bootstrap EXE and its matching ' Runtime.exe' reference")
+    for role, reference in references.items():
+        if reference.stat().st_size == 0:
+            raise ValueError(f"Empty {role} reference: {reference}")
+        with reference.open("rb") as stream:
+            evidence[role] = {"reference": str(reference), "referenceSha256": sha_stream(stream),
+                              "entry": f"app/{reference.name}"}
+    if evidence["launcher"]["referenceSha256"] == evidence["runtime"]["referenceSha256"]:
+        raise ValueError("Bootstrap and Electron Runtime must be different executable files")
     with open(asar_reference, "rb") as reference:
         evidence["referenceAsarSha256"] = sha_stream(reference)
     with zipfile.ZipFile(package) as archive:
@@ -80,6 +95,8 @@ def verify_package(package, asar_reference, *, version, identity, publisher):
         seen = set()
         names = {info.filename for info in infos if not info.is_dir()}
         file_paths = {normalized_entry(name, opc_encoded=True) for name in names}
+        files_by_path = {normalized_entry(info.filename, opc_encoded=True): info
+                         for info in infos if not info.is_dir()}
         for info in infos:
             normalized = normalized_entry(info.filename, opc_encoded=True)
             if normalized in seen:
@@ -109,6 +126,18 @@ def verify_package(package, asar_reference, *, version, identity, publisher):
                 executable = application.get("Executable", "").replace("\\", "/")
                 if not executable or normalized_entry(executable) not in file_paths:
                     errors.append(f"Application executable missing from package: {executable!r}")
+                if not executable or normalized_entry(executable) != normalized_entry(evidence["launcher"]["entry"]):
+                    errors.append(f"Application must start the compatibility bootstrap: {executable!r}")
+        for role in references:
+            entry = evidence[role]["entry"]
+            info = files_by_path.get(normalized_entry(entry))
+            if info is None:
+                errors.append(f"Missing {role} executable: {entry}")
+                continue
+            with archive.open(info) as inner:
+                evidence[role]["packagedSha256"] = sha_stream(inner)
+            if evidence[role]["packagedSha256"] != evidence[role]["referenceSha256"]:
+                errors.append(f"{role.capitalize()} mismatch: package does not contain the rebuilt executable pair")
         if ASAR_PATH not in names:
             errors.append(f"Missing application source archive: {ASAR_PATH}")
         else:
@@ -130,16 +159,23 @@ def main(argv=None):
     parser.add_argument("--version")
     parser.add_argument("--identity")
     parser.add_argument("--publisher")
+    parser.add_argument("--launcher-reference", type=Path)
+    parser.add_argument("--runtime-reference", type=Path)
     args = parser.parse_args(argv)
     try:
         defaults = {}
-        if not all((args.version, args.identity, args.publisher)):
+        if not all((args.version, args.identity, args.publisher, args.launcher_reference, args.runtime_reference)):
             defaults = json.loads(args.package_json.read_text(encoding="utf-8-sig"))
         appx = defaults.get("build", {}).get("appx", {})
         version = args.version or f"{defaults.get('version', '')}.0"
+        product_name = defaults.get("build", {}).get("productName", defaults.get("productName", "FlyingMouse Format"))
+        rebuilt_root = args.asar_reference.parent.parent
+        launcher_reference = args.launcher_reference or rebuilt_root / f"{product_name}.exe"
+        runtime_reference = args.runtime_reference or rebuilt_root / f"{product_name} Runtime.exe"
         evidence = verify_package(args.package, args.asar_reference, version=version,
                                   identity=args.identity or appx.get("identityName"),
-                                  publisher=args.publisher or appx.get("publisher"))
+                                  publisher=args.publisher or appx.get("publisher"),
+                                  launcher_reference=launcher_reference, runtime_reference=runtime_reference)
     except (OSError, ValueError, KeyError, ET.ParseError, zipfile.BadZipFile, RuntimeError) as error:
         evidence = {"ok": False, "errors": [str(error)]}
     print(json.dumps(evidence, ensure_ascii=False, indent=2))

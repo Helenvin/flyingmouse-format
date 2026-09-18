@@ -271,7 +271,7 @@ test("save dialogs restore and update the last successful directory", () => {
   assert.ok(packageJson.build.files.includes("settings-store.js"));
   assert.match(main, /readLastSaveDirectory/);
   assert.match(main, /writeLastSaveDirectory/);
-  assert.match(main, /path\.join\(lastSaveDirectory, fileName\)/);
+  assert.ok(packageJson.build.files.includes("save-dialog.js"));
   assert.match(main, /defaultPath: lastSaveDirectory/);
   assert.match(main, /writeLastSaveDirectory\(settingsPath, path\.dirname\(result\.filePath\)\)/);
   assert.match(main, /writeLastSaveDirectory\(settingsPath, directory\)/);

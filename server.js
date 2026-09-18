@@ -505,15 +505,16 @@ app.post("/api/convert-images-to-pdf", assertLocalWebRequest, upload.array("file
   // 空白页：前端队列里插入的空白页条目。blanks=0,3 表示在上传文件流（不含
   // 空白页）的第 0 个文件之前、第 3 个文件之后插入空白页；从后往前插入避免
   // 索引错位，PDF 生成时空白页输出纯白 A4 页。
-  const blankAfter = new Set(
+  const blankAfter = (
     String(req.body?.blanks || "")
       .split(",")
       .map((item) => item.trim())
       .filter((item) => item !== "")
       .map(Number)
-      .filter((item) => Number.isFinite(item) && item >= 0 && item <= imageFiles.length)
+      .filter((item) => Number.isInteger(item) && item >= 0 && item <= imageFiles.length)
   );
-  for (const blankIndex of [...blankAfter].sort((a, b) => b - a)) {
+  // Equal positions represent consecutive pages and must not be deduplicated.
+  for (const blankIndex of blankAfter.sort((a, b) => b - a)) {
     imageFiles.splice(blankIndex, 0, { inputPath: "", originalName: "", category: "image", blank: true });
   }
 

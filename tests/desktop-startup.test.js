@@ -17,7 +17,7 @@ async function startDesktop({ serverFailure } = {}) {
     whenReady: () => Promise.resolve(), requestSingleInstanceLock: () => true,
     on: (name, listener) => handlers.set(name, listener),
     quit: () => events.push("quit"), disableHardwareAcceleration() {}, setAppUserModelId() {},
-    commandLine: { appendSwitch() {} }
+    commandLine: { hasSwitch: () => false, getSwitchValue: () => "", appendSwitch() {} }
   };
   class Window extends EventEmitter {
     constructor(options) {

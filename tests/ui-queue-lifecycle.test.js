@@ -32,7 +32,7 @@ function harness({ targets, convert } = {}) {
     summarizeFiles: files => ({ name: files.map(file => file.name).join(", "), meta: "" }),
     extensionOf: name => name.split(".").at(-1), preferredTarget: () => null,
     categoryLabel: value => value, isLongTaskTarget: () => false,
-    mouseStateForConversion: () => "converting", maybeShowQqTutorial() {}, rendererLog() {},
+    mouseStateForConversion: () => "converting", rendererLog() {},
     setMouseState() {}, setWorkflowStep() {}, resetProgress() {}, setProgress() {},
     setIndeterminateProgress() {}, closePreview() {}, renderBatchList() {},
     syncVideoCodecField() {}, syncPdfActionFields() {}, syncImagePdfModeField() {}, syncPdfExcelHint() {},

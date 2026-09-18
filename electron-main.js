@@ -1,3 +1,4 @@
+(function startDesktop() {
 const path = require("path");
 const fs = require("fs");
 const os = require("os");
@@ -6,6 +7,7 @@ const saveDownload = require("./save-download");
 const storeEngineCache = require("./store-engine-cache");
 const officeReadiness = require("./office-readiness");
 const { saveConvertedResult } = require("./save-converted-result");
+const { chooseConvertedSavePath } = require("./save-dialog");
 const {
   isTrustedRendererUrl,
   resolveTrustedDownloadUrl,
@@ -29,14 +31,39 @@ let desktopRecovery = null;
 let server = null;
 let serverUrl = "";
 let serverRuntime = null;
-const settingsPath = path.join(app.getPath("userData"), "settings.json");
 const cliMarkerIndex = process.argv.indexOf("--cli");
 const cliMode = cliMarkerIndex >= 0;
+let settingsPath;
+let startupPath = "userData";
 
-// Route all logging (including from server.js and renderer-forwarded IPC
-// messages) to a single debug.log in the Electron userData directory.
-logger.setLogFile(path.join(app.getPath("userData"), "debug.log"));
-process.env.FLYINGMOUSE_LOG_FILE = logger.getLogFile();
+try {
+  // Electron can replace an unusable --user-data-dir with its default before
+  // this module runs. Validate the original switch before touching that fallback.
+  if (app.commandLine.hasSwitch("user-data-dir")) {
+    const requestedProfile = app.commandLine.getSwitchValue("user-data-dir");
+    if (!requestedProfile) {
+      throw Object.assign(new Error("--user-data-dir requires a directory path."), { code: "EINVAL", path: "--user-data-dir" });
+    }
+    startupPath = path.resolve(requestedProfile);
+    fs.mkdirSync(startupPath, { recursive: true });
+    if (path.resolve(app.getPath("userData")) !== startupPath) app.setPath("userData", startupPath);
+  }
+  startupPath = app.getPath("userData");
+  settingsPath = path.join(startupPath, "settings.json");
+  startupPath = path.join(startupPath, "debug.log");
+  // Server and renderer-forwarded messages share this profile's log.
+  logger.setLogFile(startupPath);
+  process.env.FLYINGMOUSE_LOG_FILE = logger.getLogFile();
+} catch (error) {
+  const detail = `无法准备配置或日志目录；应用已停止启动，未切换到备用配置。\nCould not prepare the selected profile or log directory. Startup stopped without switching to another profile.\n\n${error?.path || startupPath}\n${error?.code || "STARTUP_PROFILE_ERROR"}: ${error?.message || error}`;
+  console.error(detail);
+  try {
+    if (!cliMode) dialog.showErrorBox("飞鼠格式启动失败 / FlyingMouse Format could not start", detail);
+  } finally {
+    app.exit(1);
+  }
+  return;
+}
 
 function log(message, error) {
   if (error) {
@@ -137,7 +164,9 @@ function configureRuntime() {
   // 双开实例时各自 server 会在同目录互相清掉对方的产物（cleanupOldFiles 按 mtime 删），
   // 并共享 downloads 登记表之外的文件——本机日志实证过两实例并行（2026-08-25）。
   // 以 pid 为后缀后各实例完全隔离，互不干扰。
-  process.env.FLYINGMOUSE_RUNTIME_DIR = path.join(os.tmpdir(), `flyingmouse-format-runtime-${process.pid}`);
+  // CLI owns a fresh child workspace and disposes it before app.exit; preserve
+  // an explicit caller-owned parent until that lifecycle has initialized it.
+  if (!cliMode) process.env.FLYINGMOUSE_RUNTIME_DIR = path.join(os.tmpdir(), `flyingmouse-format-runtime-${process.pid}`);
   const runtimePaths = resolveRuntimePaths({ resourcesPath: process.resourcesPath });
   process.env.FLYINGMOUSE_FFMPEG_PATH = runtimePaths.ffmpeg;
   if (process.windowsStore) {
@@ -345,10 +374,8 @@ ipcMain.handle("save-converted-file", async (event, payload) => {
   const absoluteUrl = trustedDownloadUrl(payload?.downloadUrl);
   const assets = Array.isArray(payload?.assets) ? payload.assets : [];
   const lastSaveDirectory = await readLastSaveDirectory(settingsPath, app.getPath("downloads"));
-  const result = await dialog.showSaveDialog(mainWindow, {
-    title: "保存转换后的文件",
-    defaultPath: path.join(lastSaveDirectory, fileName),
-    buttonLabel: "保存"
+  const result = await chooseConvertedSavePath({
+    dialog, window: mainWindow, directory: lastSaveDirectory, fileName
   });
 
   if (result.canceled || !result.filePath) {
@@ -356,7 +383,7 @@ ipcMain.handle("save-converted-file", async (event, payload) => {
   }
 
   await saveConvertedResult({ downloadUrl: absoluteUrl, fileName, assets }, result.filePath,
-    { download: downloadToFile, resolveUrl: trustedDownloadUrl, log });
+    { download: downloadToFile, resolveUrl: trustedDownloadUrl, log, overwrite: result.overwrite });
   await writeLastSaveDirectory(settingsPath, path.dirname(result.filePath))
     .catch((error) => log("Failed to remember save directory", error));
   log(`Saved converted file: ${result.filePath}`);
@@ -514,3 +541,4 @@ app.on("web-contents-created", (_event, contents) => {
     return { action: "deny" };
   });
 });
+})();

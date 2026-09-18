@@ -7,6 +7,7 @@ const path = require("path");
 const { spawn } = require("child_process");
 const sanitize = require("sanitize-filename");
 const logger = require("./logger");
+const { cancellationError } = require("./conversion-cancellation");
 const {
   OUTPUT_DIR,
   imageInput,
@@ -45,6 +46,7 @@ function ensureDirs() {
 
 function run(command, args, options = {}) {
   return new Promise((resolve, reject) => {
+    if (options.signal?.aborted) { reject(cancellationError()); return; }
     const child = spawn(command, args, { shell: false, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
     // EOF through a pipe avoids libuv opening the Windows NUL device.
     child.stdin?.on("error", () => {});
@@ -57,6 +59,8 @@ function run(command, args, options = {}) {
     let stderrTruncated = false;
     let failure = null;
     let settled = false;
+    const abort = () => { failure = cancellationError(); child.kill(); };
+    options.signal?.addEventListener("abort", abort, { once: true });
     const timer = setTimeout(() => {
       failure = Object.assign(new Error("Conversion process timed out."), { code: "ETIMEDOUT" });
       child.kill();
@@ -65,6 +69,7 @@ function run(command, args, options = {}) {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      options.signal?.removeEventListener("abort", abort);
       const output = { stdout: Buffer.concat(stdoutChunks).toString("utf8"), stderr: stderr.toString("utf8"), stderrTruncated };
       if (failure || code !== 0) {
         const error = failure || Object.assign(new Error(output.stderr.trim() || `Conversion process exited with code ${code}.`), { code });

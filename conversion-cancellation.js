@@ -1,3 +1,5 @@
+let applicationClosing = false;
+
 function cancellationError() {
   return Object.assign(new Error("转换已取消。"), {
     code: "CONVERSION_CANCELED",
@@ -6,7 +8,9 @@ function cancellationError() {
 }
 
 function throwIfCanceled(signal) {
-  if (signal?.aborted) throw cancellationError();
+  if (applicationClosing || signal?.aborted) throw cancellationError();
 }
 
-module.exports = { cancellationError, throwIfCanceled };
+function beginApplicationShutdown() { applicationClosing = true; }
+
+module.exports = { cancellationError, throwIfCanceled, beginApplicationShutdown };

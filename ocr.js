@@ -90,6 +90,8 @@ function ocrError(code, zhCN, enUS, details = {}) {
 }
 
 async function createOcrWorker() {
+  const ownedTasks = require("./owned-tasks");
+  ownedTasks.assertAccepting();
   if (!ocrAvailable()) {
     throw ocrError("OCR_ENGINE_UNAVAILABLE",
       "OCR 引擎或中英文语言文件缺失，请修复或重新安装飞鼠格式。",
@@ -99,17 +101,19 @@ async function createOcrWorker() {
   const { createWorker } = loadTesseract();
   const paths = ocrRuntimePaths();
   // 语言集固定中英文：牺牲泰文，避免泰文模型抢认中文、产出乱码；中文识别优先。
-  const worker = await createWorker("eng+chi_sim", 1, {
+  const worker = await ownedTasks.trackPendingWorker(createWorker("eng+chi_sim", 1, {
     langPath: paths.langPath,
     corePath: paths.corePath,
     workerPath: paths.workerPath,
     cacheMethod: "none"
-  });
+  }));
   try {
+    ownedTasks.assertAccepting();
     await worker.setParameters({
       preserve_interword_spaces: "1",
       user_defined_dpi: "300"
     });
+    ownedTasks.assertAccepting();
   } catch (error) {
     await worker.terminate().catch(() => {});
     throw error;

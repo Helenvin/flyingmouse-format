@@ -324,7 +324,7 @@ test("packaged Electron exposes CLI mode without creating a window", () => {
   assert.strictEqual(packageJson.bin["flyingmouse-format"], "cli.js");
   assert.match(main, /process\.argv\.indexOf\("--cli"\)/);
   assert.match(main, /if \(cliMode\)[\s\S]*runCli/);
-  assert.match(main, /if \(!cliMode && !mainWindow/);
+  assert.match(main, /if \(!cliMode && !desktopShutdown\.isStopping\(\) && !mainWindow/);
 });
 
 test("runtime diagnostics read Sharp's supported runtime version API", () => {

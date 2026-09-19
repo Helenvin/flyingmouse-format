@@ -7,6 +7,7 @@ const path = require("path");
 const { spawn } = require("child_process");
 const sanitize = require("sanitize-filename");
 const logger = require("./logger");
+const ownedTasks = require("./owned-tasks");
 const { cancellationError } = require("./conversion-cancellation");
 const {
   OUTPUT_DIR,
@@ -46,8 +47,10 @@ function ensureDirs() {
 
 function run(command, args, options = {}) {
   return new Promise((resolve, reject) => {
+    ownedTasks.assertAccepting();
     if (options.signal?.aborted) { reject(cancellationError()); return; }
     const child = spawn(command, args, { shell: false, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
+    ownedTasks.trackProcess(child);
     // EOF through a pipe avoids libuv opening the Windows NUL device.
     child.stdin?.on("error", () => {});
     child.stdin?.end();

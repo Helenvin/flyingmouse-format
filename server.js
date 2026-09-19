@@ -243,7 +243,7 @@ async function purgeRuntimeDirs({ dirs = [UPLOAD_DIR, OUTPUT_DIR] } = {}) {
   }
 }
 
-// 同步版：electron-main before-quit 里用，避免异步 purge 与进程退出抢时间。
+// Legacy explicit maintenance helper; desktop shutdown uses bounded async cleanup.
 function purgeRuntimeDirsSync({ dirs = [UPLOAD_DIR, OUTPUT_DIR], fsModule = fs } = {}) {
   for (const dir of dirs) {
     try { fsModule.rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ }
@@ -282,9 +282,22 @@ async function purgeStaleRuntimeDirs({ runtimeDir = RUNTIME_DIR } = {}) {
     })
     .map(async (entry) => {
       const dirPath = path.join(parent, entry.name);
-      const stat = await fsp.stat(dirPath).catch(() => null);
-      if (stat && stat.mtimeMs < cutoff) {
-        await fsp.rm(dirPath, { recursive: true, force: true }).catch(() => {});
+      const { PENDING_CLEANUP_FILE, assertRuntimeIdentity, removeMarkedRuntime } = require("./desktop-shutdown");
+      const stat = await fsp.lstat(dirPath).catch(() => null);
+      if (!stat?.isDirectory() || stat.isSymbolicLink()) return;
+      const owner = { runtimeDir: dirPath, identity: stat, realPath: await fsp.realpath(dirPath) };
+      const pid = Number(entry.name.slice(prefix.length));
+      const markerPath = path.join(dirPath, PENDING_CLEANUP_FILE);
+      const markerStat = await fsp.lstat(markerPath).catch(() => null);
+      let marked = false;
+      if (markerStat?.isFile() && !markerStat.isSymbolicLink() && markerStat.size <= 256) {
+        const marker = await fsp.readFile(markerPath, "utf8").then(JSON.parse).catch(() => null);
+        marked = marker?.schema === 1 && marker.pid === pid && marker.dev === stat.dev && marker.ino === stat.ino;
+      }
+      if ((marked || stat.mtimeMs < cutoff) && !runtimeProcessIsAlive(pid)
+        && await assertRuntimeIdentity(owner)) {
+        if (marked) await removeMarkedRuntime(owner);
+        else await fsp.rm(dirPath, { recursive: true, force: true });
       }
     }));
 }
@@ -346,7 +359,7 @@ async function refreshOfficeCapability() {
   return officeProbePromise;
 }
 
-async function getTools() {
+async function getTools({ includeOffice = true } = {}) {
   if (!toolsPromise) toolsPromise = (async () => {
     const pandocExecutable = pandocPath();
     let pandocEnabled = false;
@@ -375,6 +388,10 @@ async function getTools() {
       sharp: true
     };
   })();
+  // PDF target discovery has no Office dependency. Leave the shared Office
+  // probe and its cached diagnostics untouched; full capability/conversion
+  // requests still await the verified engine result below.
+  if (!includeOffice) return { ...await toolsPromise };
   const [baseTools, officeEnabled] = await Promise.all([toolsPromise, refreshOfficeCapability()]);
   cachedTools = { ...baseTools, libreoffice: officeEnabled };
   return { ...cachedTools };
@@ -472,8 +489,8 @@ app.get("/api/capabilities", async (_req, res) => {
 });
 
 app.post("/api/targets", async (req, res) => {
-  const tools = await getTools();
   const ext = normalizeExt(String(req.body?.extension || "").toLowerCase());
+  const tools = await getTools({ includeOffice: categoryForExt(ext) !== "pdf" });
   res.json({ extension: ext, category: categoryForExt(ext), targets: targetsForExt(ext, tools), experimental: experimentalInputSet.has(ext) });
 });
 

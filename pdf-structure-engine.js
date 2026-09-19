@@ -1,4 +1,5 @@
 const childProcess = require("node:child_process");
+const ownedTasks = require("./owned-tasks");
 const fsp = require("node:fs/promises");
 const path = require("node:path");
 
@@ -16,11 +17,13 @@ const DEFAULT_MAX_BUFFER_BYTES = 1024 * 1024;
 // for close before deleting its private output directory.
 function execFileAsync(file, args, options) {
   return new Promise((resolve, reject) => {
+    ownedTasks.assertAccepting();
     let failure, output;
     const child = childProcess.execFile(file, args, options, (error, stdout, stderr) => {
       failure = error;
       output = { stdout, stderr };
     });
+    ownedTasks.trackProcess(child, { directOnly: true });
     child.once("close", () => failure ? reject(failure) : resolve(output));
   });
 }

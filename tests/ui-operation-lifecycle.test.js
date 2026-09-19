@@ -55,7 +55,7 @@ function harness() {
   context.window = { FlyingMouseProgress: { createRequest: () => ({ send: (url, body) => context.fetch(url, { body }), close() {}, cancel: async () => {} }) } };
   vm.runInContext([
     range("function resetDownload()", "let capabilityRefreshTimer;"),
-    range("function commonTargetsFrom(", "function renderBatchList()"),
+    range("function targetFormatLabel(", "function renderBatchList()"),
     range("function canReorderImages()", "function syncVideoCodecField()"),
     range("function syncImagePdfModeField()", "function syncPdfExcelHint()"),
     range("async function acceptFiles(", "async function saveResult("),

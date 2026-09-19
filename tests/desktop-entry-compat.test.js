@@ -34,6 +34,7 @@ async function desktop(t, options = {}) {
   const profileChanges = [];
   let currentProfile = profile;
   let entryError;
+  let bootPromise;
   const blocked = options.block === "local-profile" ? localProfile : options.block === "profile" ? profile : null;
   const fakeFs = {
     ...fs,
@@ -65,7 +66,9 @@ async function desktop(t, options = {}) {
     setPath(name, value) { assert.equal(name, "userData"); profileChanges.push(value); currentProfile = value; },
     getVersion: () => "0.7.8", getAppPath: () => ROOT, on() {},
     requestSingleInstanceLock: () => true,
-    whenReady() { events.push("whenReady"); return options.boot ? Promise.resolve() : new Promise(() => {}); },
+    whenReady() { events.push("whenReady"); return options.boot ? { then(fn) {
+      bootPromise = Promise.resolve().then(fn); return bootPromise;
+    } } : new Promise(() => {}); },
     exit(code) { events.push({ exit: code }); }, quit() { events.push("quit"); },
     disableHardwareAcceleration() {}, setAppUserModelId() {}
   };
@@ -106,6 +109,7 @@ async function desktop(t, options = {}) {
         if (name === "os" || name === "node:os") return { ...os, homedir: () => scratch, tmpdir: () => scratch };
         if (name === "./package.json") return { ...localRequire(name), flyingMouseLocalAudio: LOCAL_SOURCE };
         if (name === "./logger") return load("logger.js");
+        if (name === "./desktop-shutdown") return load("desktop-shutdown.js");
         if (name === "./agent-skill-installer") return load("agent-skill-installer.js");
         // The HTTP listener is the system boundary; no real server or GUI is started.
         if (name === "./server") return { startServer: async () => {
@@ -122,6 +126,7 @@ async function desktop(t, options = {}) {
     await fsp.rm(scratch, { recursive: true, force: true });
   });
   try { load("electron-main.js"); } catch (error) { entryError = error; }
+  await bootPromise?.catch(() => {});
   await new Promise(resolve => setImmediate(resolve));
   return { scratch, profile, explicitProfilePath, localProfile, launcher, runtime, skillRoot, events, handlers, windows, profileChanges, entryError };
 }

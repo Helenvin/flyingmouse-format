@@ -140,7 +140,7 @@ const messages = {
     "alphaBackground.white": "白色（默认）", "alphaBackground.black": "黑色",
     "alphaBackground.green": "绿色（绿幕）", "alphaBackground.magenta": "洋红（绿幕抠像常用）",
     "pdfPassword.label": "PDF 密码（加密/解密）", "pdfAction.label": "PDF 操作",
-    "pdfAction.merge": "合并为一个 PDF", "pdfAction.split": "拆分 PDF", "pdfAction.encrypt": "加密 PDF", "pdfAction.decrypt": "解密 PDF",
+    "pdfAction.merge": "合并为一个 PDF", "pdfAction.split": "拆分 PDF（输出 ZIP）", "pdfAction.encrypt": "加密 PDF", "pdfAction.decrypt": "解密 PDF",
     "pdfSplitMode.label": "拆分方式", "pdfSplitMode.page": "逐页拆分（每页一个 PDF）", "pdfSplitMode.group": "每 N 页一组",
     "pdfGroupSize.label": "每几页一组",
     "imagePdfMode.label": "多图转 PDF", "imagePdfMode.merge": "合并为一个 PDF（默认）", "imagePdfMode.separate": "每张图片单独生成 PDF",
@@ -188,7 +188,7 @@ const messages = {
     "alphaBackground.white": "White (default)", "alphaBackground.black": "Black",
     "alphaBackground.green": "Green (green screen)", "alphaBackground.magenta": "Magenta (common for chroma key)",
     "pdfPassword.label": "PDF password (encrypt/decrypt)", "pdfAction.label": "PDF action",
-    "pdfAction.merge": "Merge into one PDF", "pdfAction.split": "Split PDF", "pdfAction.encrypt": "Encrypt PDF", "pdfAction.decrypt": "Decrypt PDF",
+    "pdfAction.merge": "Merge into one PDF", "pdfAction.split": "Split PDF (ZIP output)", "pdfAction.encrypt": "Encrypt PDF", "pdfAction.decrypt": "Decrypt PDF",
     "pdfSplitMode.label": "Split mode", "pdfSplitMode.page": "Split into single pages", "pdfSplitMode.group": "Group every N pages",
     "pdfGroupSize.label": "Pages per group",
     "imagePdfMode.label": "Multiple images to PDF", "imagePdfMode.merge": "Merge into one PDF (default)", "imagePdfMode.separate": "One PDF per image",
@@ -241,6 +241,9 @@ function renderHealth() {
 
 function refreshLanguage() {
   applyStaticTranslations();
+  for (const option of targetSelect.options) {
+    if (option.value) option.textContent = targetFormatLabel(option.value);
+  }
   renderHealth();
   if (state.capabilities) renderFormatTable();
   if (!state.files.length) setStatus(t("status.ready"));
@@ -474,7 +477,7 @@ async function fetchCapabilities() {
       if ([...targetSelect.options].some(option => option.value === target)) continue;
       const option = document.createElement("option");
       option.value = target;
-      option.textContent = target.toUpperCase();
+      option.textContent = targetFormatLabel(target);
       targetSelect.append(option);
     }
     targetSelect.disabled = !targets.length;
@@ -530,6 +533,14 @@ async function loadTargets(file) {
 
   if (!response.ok) throw new Error("无法判断目标格式。");
   return response.json();
+}
+
+function targetFormatLabel(target) {
+  if (target === "docx") return i18n.language === "en-US" ? "Word (DOCX)" : "Word（DOCX）";
+  if (target === "xlsx" && state.fileInfos.length && state.fileInfos.every(info => info.category === "pdf")) {
+    return i18n.language === "en-US" ? "Excel (smart table extraction)" : "Excel（智能表格提取）";
+  }
+  return target.toUpperCase();
 }
 
 function commonTargetsFrom(infos) {
@@ -803,14 +814,7 @@ async function acceptFiles(fileList, options = {}) {
     for (const target of targets) {
       const option = document.createElement("option");
       option.value = target;
-      let label = target.toUpperCase();
-      if (target === "pdf" && state.fileInfos.every((info) => info.category === "pdf")) {
-        label = "PDF";
-      }
-      if (target === "xlsx" && state.fileInfos.every((info) => info.category === "pdf")) {
-        label = i18n.language === "en-US" ? "Excel (smart table extraction)" : "Excel（智能表格提取）";
-      }
-      option.textContent = label;
+      option.textContent = targetFormatLabel(target);
       targetSelect.append(option);
     }
 
@@ -1460,7 +1464,7 @@ function refreshImagePdfQueue() {
   for (const target of targets) {
     const option = document.createElement("option");
     option.value = target;
-    option.textContent = target.toUpperCase();
+    option.textContent = targetFormatLabel(target);
     targetSelect.append(option);
   }
   if (targets.includes(previousTarget)) targetSelect.value = previousTarget;

@@ -18,6 +18,8 @@ const { buildDiagnosticsReport } = require("./diagnostics");
 const { discoverSkillRoots, installAgentSkill } = require("./agent-skill-installer");
 const { resolveRuntimePaths } = require("./runtime-paths");
 const { createDesktopRecovery } = require("./desktop-recovery");
+const ownedTasks = require("./owned-tasks");
+const { createDesktopShutdown, captureRuntimeIdentity, cleanupOwnedRuntime } = require("./desktop-shutdown");
 const {
   mergeLegacySettings,
   readLastSaveDirectory,
@@ -31,6 +33,14 @@ let desktopRecovery = null;
 let server = null;
 let serverUrl = "";
 let serverRuntime = null;
+let runtimeOwner;
+const desktopShutdown = createDesktopShutdown({
+  app, log,
+  stopTasks: () => ownedTasks.stopAll(),
+  closeServer: () => { server?.close(); server?.closeAllConnections?.(); },
+  closeWindows: () => { for (const window of BrowserWindow.getAllWindows()) window.destroy(); },
+  cleanup: () => cleanupOwnedRuntime(runtimeOwner)
+});
 const cliMarkerIndex = process.argv.indexOf("--cli");
 const cliMode = cliMarkerIndex >= 0;
 let settingsPath;
@@ -73,7 +83,16 @@ function log(message, error) {
   }
 }
 
+function finishCli(code) {
+  // CLI owns its own workspace in cli.js, but Store preparation may still be
+  // running after a command that did not need Office. Stop that helper too.
+  createDesktopShutdown({ app, log, exitCode: code, releaseLock: false,
+    stopTasks: () => ownedTasks.stopAll(), closeServer: () => {}, cleanup: () => {}
+  }).beforeQuit();
+}
+
 function createWindow(url) {
+  if (desktopShutdown.isStopping()) return;
   log(`Creating window for ${url}`);
   mainWindow = new BrowserWindow({
     width: 1180,
@@ -139,7 +158,7 @@ ipcMain.handle("get-app-version", (event) => {
 // advertises a pending Office engine and awaits readiness only for Office work.
 function configureWritableLibreOfficeForStore(bundledSofficePath) {
   const localAppData = process.env.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local");
-  const enginesRoot = path.join(localAppData, "FlyingMouseFormat", "engines");
+  const enginesRoot = storeEngineCache.resolveOfficeEnginesRoot(localAppData);
   const options = {
     bundledBundle: path.join(process.resourcesPath || "", "libreoffice"),
     bundledSofficePath,
@@ -193,6 +212,7 @@ function configureRuntime() {
 }
 
 async function boot() {
+  if (desktopShutdown.isStopping()) return;
   log("Boot started");
   // 单实例锁：禁止双开（旧版允许并行，两份 server 共享同一 runtime 目录，会互删产物）。
   // 第二个实例直接退出，聚焦已有窗口。
@@ -203,6 +223,7 @@ async function boot() {
     return;
   }
   app.on("second-instance", () => {
+    if (desktopShutdown.isStopping()) return;
     log("Second instance launched; focusing existing window");
     if (mainWindow && !mainWindow.isDestroyed()) {
       if (mainWindow.isMinimized()) mainWindow.restore();
@@ -211,10 +232,13 @@ async function boot() {
     }
   });
   configureRuntime();
+  runtimeOwner = await captureRuntimeIdentity({ runtimeDir: process.env.FLYINGMOUSE_RUNTIME_DIR });
+  if (desktopShutdown.isStopping()) { await cleanupOwnedRuntime(runtimeOwner); return; }
   serverRuntime = require("./server");
 
   const started = await serverRuntime.startServer(0);
   server = started.server;
+  if (desktopShutdown.isStopping()) { server.close(); server.closeAllConnections?.(); return; }
   serverUrl = started.url;
   console.log(`FlyingMouse Format started at ${started.url}`);
   log(`Server started at ${started.url}`);
@@ -478,11 +502,11 @@ if (cliMode) {
     void officeReadiness.startOfficePreparation();
     const { runCli } = require("./cli");
     const code = await runCli(process.argv.slice(cliMarkerIndex + 1));
-    app.exit(code);
+    finishCli(code);
   }).catch((error) => {
     log("CLI boot failed", error);
     console.error(error);
-    app.exit(1);
+    finishCli(1);
   });
 } else {
   app.whenReady().then(boot).catch((error) => {
@@ -503,7 +527,7 @@ app.on("window-all-closed", () => {
 });
 
 app.on("activate", () => {
-  if (!cliMode && !mainWindow && server?.listening) {
+  if (!cliMode && !desktopShutdown.isStopping() && !mainWindow && server?.listening) {
     const address = server.address();
     const port = typeof address === "object" && address ? address.port : 5177;
     serverUrl = `http://127.0.0.1:${port}`;
@@ -511,21 +535,10 @@ app.on("activate", () => {
   }
 });
 
-app.on("before-quit", () => {
+app.on("before-quit", (event) => {
   if (cliMode) return;
   log("Before quit");
-  if (server?.listening) {
-    server.close();
-  }
-  // 退出即清理本实例 runtime：产物登记表在内存里，进程结束后再无保存机会，
-  // 因此运行期间不再让产物过期（2026-09-07 决策），残骸在退出/下次启动时回收。
-  try {
-    serverRuntime?.purgeRuntimeDirsSync?.({
-      dirs: [require("./config").UPLOAD_DIR, require("./config").OUTPUT_DIR]
-    });
-  } catch (error) {
-    log("Failed to purge runtime dirs on quit", error);
-  }
+  desktopShutdown.beforeQuit(event);
 });
 
 app.on("web-contents-created", (_event, contents) => {

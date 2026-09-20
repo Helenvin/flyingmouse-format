@@ -11,6 +11,7 @@ const yauzl = require("yauzl");
 const { after, before, test } = require("node:test");
 const sharp = require("sharp");
 const { PDFDocument, StandardFonts } = require("pdf-lib");
+const { snapshotOfficeProcesses } = require("./helpers/office-processes");
 
 const scratchRoot = path.join(os.tmpdir(), `flyingmouse-format-tests-${process.pid}`);
 const isolatedRuntimeRoot = path.join(scratchRoot, "empty-runtime");
@@ -251,19 +252,6 @@ function assertPdf(filePath) {
     assert.strictEqual(header.toString("latin1"), "%PDF-");
   } finally {
     fs.closeSync(fd);
-  }
-}
-
-function sofficeProcessIds() {
-  if (process.platform !== "win32") return new Set();
-  try {
-    const output = execFileSync("tasklist.exe", ["/FI", "IMAGENAME eq soffice*", "/FO", "CSV", "/NH"], {
-      encoding: "utf8",
-      windowsHide: true
-    });
-    return new Set([...output.matchAll(/"soffice(?:\.exe|\.bin)"\s*,\s*"(\d+)"/gi)].map((match) => match[1]));
-  } catch {
-    return new Set();
   }
 }
 
@@ -1457,11 +1445,10 @@ test("converts a DOCX to plain text without LibreOffice txt export", async () =>
   assert.strictEqual(hashFile(sourcePath), beforeHash);
 });
 
-test("converts a DOCX to PDF via LibreOffice", async () => {
+test("converts a DOCX to PDF via LibreOffice", async (t) => {
   const sourcePath = path.join(scratchRoot, "文档转PDF.docx");
   await createMinimalDocx(sourcePath, "Fresh isolated profile PDF content 2026");
   const beforeHash = hashFile(sourcePath);
-  const processesBefore = sofficeProcessIds();
 
   const { response, body } = await uploadConvert(sourcePath, "文档转PDF.docx", "pdf", "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
 
@@ -1470,11 +1457,21 @@ test("converts a DOCX to PDF via LibreOffice", async () => {
   const outputPath = await downloadResult(body, "文档转PDF.pdf");
   assertPdf(outputPath);
   assert.strictEqual(hashFile(sourcePath), beforeHash);
-  await new Promise((resolve) => setTimeout(resolve, 500));
-  const leakedProcesses = [...sofficeProcessIds()].filter((pid) => !processesBefore.has(pid));
-  assert.deepStrictEqual(leakedProcesses, [], `LibreOffice left child processes behind: ${leakedProcesses.join(", ")}`);
-  const runtimeEntries = await fsp.readdir(isolatedRuntimeRoot).catch(() => []);
-  assert.deepStrictEqual(runtimeEntries.filter((name) => name.startsWith("office-")), [], "isolated Office profiles must be removed");
+  const exceedsProfilePath = process.platform === 'win32'
+    && path.join(isolatedRuntimeRoot, 'office-XXXXXX', 'p').length > require('../office-runtime').MAX_PROFILE_PATH_LENGTH;
+  await t.test("the owned local Office profiles and processes are released", {
+    skip: !serverModule ? 'External service runtime ownership is unavailable'
+      : exceedsProfilePath ? 'Native profile uses a different short-path fallback' : false
+  }, async () => {
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    const leakedProcesses = snapshotOfficeProcesses(isolatedRuntimeRoot);
+    assert.deepStrictEqual(leakedProcesses, [], `LibreOffice left owned profile processes behind: ${JSON.stringify(leakedProcesses)}`);
+    const runtimeEntries = await fsp.readdir(isolatedRuntimeRoot).catch(error => {
+      if (error.code === 'ENOENT') return [];
+      throw error;
+    });
+    assert.deepStrictEqual(runtimeEntries.filter((name) => name.startsWith("office-")), [], "isolated Office profiles must be removed");
+  });
 });
 
 

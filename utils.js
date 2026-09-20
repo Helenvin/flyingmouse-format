@@ -7,6 +7,8 @@ const path = require("path");
 const { spawn } = require("child_process");
 const sanitize = require("sanitize-filename");
 const logger = require("./logger");
+const ownedTasks = require("./owned-tasks");
+const { cancellationError } = require("./conversion-cancellation");
 const {
   OUTPUT_DIR,
   imageInput,
@@ -45,7 +47,10 @@ function ensureDirs() {
 
 function run(command, args, options = {}) {
   return new Promise((resolve, reject) => {
+    ownedTasks.assertAccepting();
+    if (options.signal?.aborted) { reject(cancellationError()); return; }
     const child = spawn(command, args, { shell: false, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
+    ownedTasks.trackProcess(child);
     // EOF through a pipe avoids libuv opening the Windows NUL device.
     child.stdin?.on("error", () => {});
     child.stdin?.end();
@@ -57,6 +62,25 @@ function run(command, args, options = {}) {
     let stderrTruncated = false;
     let failure = null;
     let settled = false;
+    const failedObservers = new Set();
+    function observerFailed(name) {
+      if (failedObservers.has(name)) return;
+      failedObservers.add(name);
+      logger.warn("Conversion progress observer failed.");
+    }
+    function observe(name, chunk) {
+      if (failure || settled || failedObservers.has(name) || typeof options[name] !== "function") return;
+      try {
+        const result = options[name](Buffer.from(chunk));
+        if (result && typeof result.then === "function") Promise.resolve(result).catch(() => observerFailed(name));
+      } catch {
+        // Progress is diagnostic only. Never let a listener exception escape
+        // the stream event or change native success/output-limit semantics.
+        observerFailed(name);
+      }
+    }
+    const abort = () => { failure = cancellationError(); child.kill(); };
+    options.signal?.addEventListener("abort", abort, { once: true });
     const timer = setTimeout(() => {
       failure = Object.assign(new Error("Conversion process timed out."), { code: "ETIMEDOUT" });
       child.kill();
@@ -65,6 +89,7 @@ function run(command, args, options = {}) {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      options.signal?.removeEventListener("abort", abort);
       const output = { stdout: Buffer.concat(stdoutChunks).toString("utf8"), stderr: stderr.toString("utf8"), stderrTruncated };
       if (failure || code !== 0) {
         const error = failure || Object.assign(new Error(output.stderr.trim() || `Conversion process exited with code ${code}.`), { code });
@@ -81,11 +106,15 @@ function run(command, args, options = {}) {
       if (stdoutBytes > stdoutLimit) {
         failure = Object.assign(new Error("Conversion process output exceeded the supported size."), { code: "PROCESS_OUTPUT_LIMIT" });
         child.kill();
-      } else stdoutChunks.push(chunk);
+      } else {
+        stdoutChunks.push(chunk);
+        observe("onStdout", chunk);
+      }
     });
     child.stderr.on("data", chunk => {
       stderr = Buffer.concat([stderr, chunk]);
       if (stderr.length > stderrLimit) { stderr = stderr.subarray(stderr.length - stderrLimit); stderrTruncated = true; }
+      observe("onStderr", chunk);
     });
     child.on("close", complete);
   });
@@ -319,18 +348,119 @@ function previewKindFor(downloadName, mimeType) {
 
 function registerDownload(filePath, downloadName, mimeType, options = {}) {
   const id = randomUUID();
+  const assetsDir = options.assetsDir || null;
+  // Capture ownership when conversion publishes its result. Discard never
+  // accepts a path from the client and never recursively removes a directory.
+  const owned = [captureOutput(filePath)];
+  if (assetsDir) {
+    const directory = captureOutput(assetsDir);
+    if (directory?.directory) {
+      for (const name of fs.readdirSync(assetsDir)) owned.push(captureOutput(path.join(assetsDir, name)));
+      owned.push(directory);
+    } else owned.push(null);
+  }
   downloads.set(id, {
     filePath,
     downloadName,
     mimeType,
-    assetsDir: options.assetsDir || null,
-    createdAt: Date.now()
+    assetsDir,
+    createdAt: Date.now(),
+    owned,
+    activeReaders: 0,
+    discarded: false
   });
   return {
     downloadUrl: `/downloads/${id}`,
     previewUrl: `/previews/${id}`,
     previewKind: previewKindFor(downloadName, mimeType)
   };
+}
+
+function captureOutput(filePath) {
+  try {
+    const resolved = path.resolve(filePath);
+    const relative = path.relative(OUTPUT_DIR, resolved);
+    if (!relative || relative.startsWith(`..${path.sep}`) || relative === '..' || path.isAbsolute(relative)) return null;
+    const parents = [];
+    let current = path.resolve(OUTPUT_DIR);
+    for (const part of ['.', ...path.dirname(relative).split(path.sep).filter(part => part !== '.')]) {
+      current = path.resolve(current, part);
+      const stat = fs.lstatSync(current);
+      if (!stat.isDirectory() || stat.isSymbolicLink()) return null;
+      parents.push({ path: current, dev: stat.dev, ino: stat.ino });
+    }
+    const stat = fs.lstatSync(resolved);
+    if (stat.isSymbolicLink() || (!stat.isFile() && !stat.isDirectory()) || (stat.isFile() && stat.nlink !== 1)) return null;
+    return { path: resolved, dev: stat.dev, ino: stat.ino, size: stat.size, mtimeMs: stat.mtimeMs, directory: stat.isDirectory(), parents };
+  } catch { return null; }
+}
+
+function outputStillOwned(entry) {
+  const current = captureOutput(entry.path);
+  return current && current.dev === entry.dev && current.ino === entry.ino
+    && current.directory === entry.directory
+    && (entry.directory || (current.size === entry.size && current.mtimeMs === entry.mtimeMs))
+    && current.parents.length === entry.parents.length
+    && current.parents.every((parent, index) => parent.dev === entry.parents[index].dev && parent.ino === entry.parents[index].ino);
+}
+
+function hasOtherDownloadOwner(entry, item) {
+  for (const other of downloads.values()) {
+    if (other === item) continue;
+    for (const location of [other.filePath, other.assetsDir].filter(Boolean)) {
+      const base = path.resolve(location);
+      if (entry.path === base || entry.path.startsWith(base + path.sep)
+        || (entry.directory && base.startsWith(entry.path + path.sep))) return true;
+    }
+  }
+  return false;
+}
+
+let releaseQueue = Promise.resolve();
+function releaseDownloads(ids) {
+  for (const id of ids) {
+    const item = downloads.get(id);
+    if (item) item.discarded = true;
+  }
+  releaseQueue = releaseQueue.catch(() => {}).then(async () => {
+    let count = 0;
+    for (const [id, item] of downloads) {
+      if (!item.discarded || item.activeReaders) continue;
+      let retained = false;
+      for (const entry of item.owned || [null]) {
+        if (!entry) { retained = true; continue; }
+        if (hasOtherDownloadOwner(entry, item)) continue;
+        if (!fs.existsSync(entry.path)) continue;
+        if (!outputStillOwned(entry)) { retained = true; continue; }
+        try {
+          // No await between identity validation and the single-entry delete.
+          // Empty-directory removal preserves any files added since publishing.
+          if (entry.directory) fs.rmdirSync(entry.path);
+          else fs.unlinkSync(entry.path);
+        } catch (error) {
+          if (error.code !== 'ENOENT') retained = true;
+        }
+        if (++count % 32 === 0) await new Promise(resolve => setImmediate(resolve));
+      }
+      // Keep unsafe/replaced paths registered so periodic cleanup cannot
+      // subsequently reinterpret them as unowned expired conversion products.
+      if (!retained) downloads.delete(id);
+    }
+  });
+  return releaseQueue;
+}
+
+function retainDownloadResponse(item, response) {
+  item.activeReaders = (item.activeReaders || 0) + 1;
+  let finished = false;
+  const release = () => {
+    if (finished) return;
+    finished = true;
+    item.activeReaders -= 1;
+    if (item.discarded) void releaseDownloads([]).catch(error => logger.warn('Discard cleanup failed', error));
+  };
+  response.once('finish', release);
+  response.once('close', release);
 }
 
 function downloadUrlFor(filePath, downloadName, mimeType) {
@@ -362,6 +492,8 @@ module.exports = {
   outputPathFor,
   previewKindFor,
   registerDownload,
+  releaseDownloads,
+  retainDownloadResponse,
   downloadUrlFor,
   escapeHtml
 };

@@ -15,6 +15,7 @@ const { PDFTOPPM_PATH, DOCENGINE_PATH, QPDF_PATH, pdfImageTargets } = require(".
 const { run, commandExists, escapeHtml, safeBaseName } = require("./utils");
 const { zipFiles, openZipEntries, openZipEntriesFromBuffer, readZipEntryToFile } = require("./zip-util");
 const { convertImagesToPdf } = require("./image");
+const { throwIfCanceled } = require("./conversion-cancellation");
 const { ocrAvailable, createOcrWorker, recognizeImageTextWithWorker, recognizeImageResultWithWorker } = require("./ocr");
 const { loadPdfjs } = require("./pdfjs");
 const { classifyPdf } = require("./pdf-classifier");
@@ -35,6 +36,7 @@ const { writePdfOfficeXlsx } = require("./pdf-office-xlsx");
 const { parseXmlToJson } = require("./xml-json");
 const logger = require("./logger");
 const { extractPdfScanRegions } = require("./pdf-ocr-regions");
+const { reportConversionProgress, captureConversionProgressReporter } = require("./conversion-progress");
 
 async function convertPdfDecrypt(inputPath, outputPath, password) {
   const pwd = String(password || "");
@@ -53,8 +55,8 @@ async function convertPdfDecrypt(inputPath, outputPath, password) {
 }
 
 async function convertPdfEncrypt(inputPath, outputPath, password) {
-  const pwd = String(password || "").trim();
-  if (!pwd) {
+  const pwd = String(password || "");
+  if (!pwd.trim()) {
     const error = new Error("加密 PDF 需要先设置密码。");
     error.code = "PDF_ENCRYPT_NO_PASSWORD";
     error.messages = {
@@ -108,6 +110,7 @@ function mergeOcrLineSpaces(value) {
 }
 
 async function fillMissingPdfPageText(inputPath, pages, options = {}) {
+  throwIfCanceled(options.signal);
   // A digital header does not make a raster body searchable. Empty pages alone
   // need no OCR. Coverage also catches a scan behind a searchable stamp.
   const missing = pages.filter(pdfPageNeedsOcr);
@@ -117,6 +120,7 @@ async function fillMissingPdfPageText(inputPath, pages, options = {}) {
       "Some PDF pages have no text layer. OCR is required for a complete conversion.");
   }
   assertPdfPages(pages.length, { ocr: true });
+  reportConversionProgress({ stage: "recognizing", completed: 0, total: missing.length, unit: "pages" });
   const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), "flyingmouse-pdf-page-ocr-"));
   let worker;
   try {
@@ -128,15 +132,18 @@ async function fillMissingPdfPageText(inputPath, pages, options = {}) {
     const scanRegions = !options.renderPdfTablePage && missing.every(page => Number.isInteger(page.pageNumber) && Array.isArray(page.lines))
       ? await extractPdfScanRegions(inputPath, missing, tempDir) : new Map();
     for (const page of missing) {
+      throwIfCanceled(options.signal);
       const pageNumber = page.pageNumber || pages.indexOf(page) + 1;
+      const pageOptions = { ...options, pageNumber };
       const regions = scanRegions.get(pageNumber);
       if (regions?.length) {
         const blocks = (page.lines || []).map(line => ({ bbox: line.bbox, rows: [line.cells] }));
         const warnings = [];
         for (const region of regions) {
+          throwIfCanceled(options.signal);
           const result = options.recognizeImageTextWithWorker
-            ? { text: await options.recognizeImageTextWithWorker(worker, region.outputPath), warnings: [] }
-            : await (options.recognizeImageResultWithWorker || recognizeImageResultWithWorker)(worker, region.outputPath);
+            ? { text: await options.recognizeImageTextWithWorker(worker, region.outputPath, pageOptions), warnings: [] }
+            : await (options.recognizeImageResultWithWorker || recognizeImageResultWithWorker)(worker, region.outputPath, pageOptions);
           const text = mergeOcrLineSpaces(result.text);
           if (text) blocks.push({ bbox: region.bbox, rows: text.split(/\r?\n/).filter(line=>line.trim()).map(line=>[line]) });
           warnings.push(...(result.warnings || []));
@@ -147,12 +154,14 @@ async function fillMissingPdfPageText(inputPath, pages, options = {}) {
           enUS:'Visible scan regions were recognized at their original pixel size and aspect ratio to avoid PDF stretching. Review text, amounts and reading order.'
         } });
         completed.set(page,{...page,ocr:true,ocrWarnings:warnings,rows:blocks.flatMap(block=>block.rows)});
+        throwIfCanceled(options.signal);
+        reportConversionProgress({ stage: "recognizing", completed: completed.size, total: missing.length, unit: "pages" });
         continue;
       }
       const rendered = await (options.renderPdfTablePage || renderPdfTablePage)(inputPath, pageNumber, tempDir, 200);
       const result = options.recognizeImageTextWithWorker
-        ? { text: await options.recognizeImageTextWithWorker(worker, rendered.outputPath), warnings: [] }
-        : await (options.recognizeImageResultWithWorker || recognizeImageResultWithWorker)(worker, rendered.outputPath);
+        ? { text: await options.recognizeImageTextWithWorker(worker, rendered.outputPath, pageOptions), warnings: [] }
+        : await (options.recognizeImageResultWithWorker || recognizeImageResultWithWorker)(worker, rendered.outputPath, pageOptions);
       const text = mergeOcrLineSpaces(result.text);
       const rows = text ? text.split(/\r?\n/).filter((line) => line.trim()).map((line) => [line]) : [];
       const omittedNative = [];
@@ -188,6 +197,8 @@ async function fillMissingPdfPageText(inputPath, pages, options = {}) {
         }
       }
       completed.set(page, { ...page, ocr: true, ocrWarnings: result.warnings || [], rows: [...omittedNative, ...rows] });
+      throwIfCanceled(options.signal);
+      reportConversionProgress({ stage: "recognizing", completed: completed.size, total: missing.length, unit: "pages" });
     }
     const result = pages.map((page) => completed.get(page) || page);
     if (!result.some((page) => page.rows.length)) {
@@ -306,12 +317,13 @@ async function publishAttempt(attemptPath, outputPath) {
   await fsp.rm(backupPath, { force: true }).catch(() => {});
 }
 
-async function withAttemptOutput(outputPath, produce) {
+async function withAttemptOutput(outputPath, produce, signal) {
   const attemptPath = `${outputPath}.attempt-${crypto.randomUUID()}`;
   try {
     const result = await produce(attemptPath);
     const info = await fsp.lstat(attemptPath);
     if (!info.isFile() || info.isSymbolicLink() || info.size < 1) throw new Error("invalid attempt output");
+    throwIfCanceled(signal);
     await publishAttempt(attemptPath, outputPath);
     return result;
   } finally {
@@ -329,7 +341,7 @@ async function convertStructuredPdf({ inputPath, outputPath, target, options = {
         return withAttemptOutput(outputPath, (attemptPath) =>
           (options.writePdfOfficeXlsx || writePdfOfficeXlsx)({
             manifest: selected, assetRoot, outputPath: attemptPath
-          }));
+          }), options.signal);
       }
       if (target === "docx") {
         const nativePages = await sourcePdfPages(inputPath, options);
@@ -349,7 +361,7 @@ async function convertStructuredPdf({ inputPath, outputPath, target, options = {
             }
           }
           return written;
-        });
+        }, options.signal);
         return { ...result, warnings: restored ? [{ code: "PDF_NATIVE_TEXT_RESTORED", messages: {
           zhCN: "已使用 PDF 原生文字补回结构识别遗漏的内容。", enUS: "Native PDF text was restored where structure recognition omitted it."
         } }] : [] };
@@ -377,6 +389,7 @@ function assertPdfTableOcrQuality(model) {
 }
 
 async function convertPdf(inputPath, outputPath, target, options = {}) {
+  throwIfCanceled(options.signal);
   if (target === "pdf") {
     if (options.pdfAction === "encrypt") {
       await convertPdfEncrypt(inputPath, outputPath, options.password);
@@ -389,12 +402,13 @@ async function convertPdf(inputPath, outputPath, target, options = {}) {
   }
 
   if (pdfImageTargets.includes(target)) {
-    await convertPdfPagesToImagesZip(inputPath, outputPath, target);
+    await convertPdfPagesToImagesZip(inputPath, outputPath, target, options);
     return;
   }
 
+  let classification;
   if (target === "docx" || target === "xlsx") {
-    const classification = await (options.classifyPdf || classifyPdf)(inputPath);
+    classification = await (options.classifyPdf || classifyPdf)(inputPath);
     if (classification.kind !== "native") {
       try {
         return await (options.convertStructuredPdf || convertStructuredPdf)({
@@ -428,8 +442,9 @@ async function convertPdf(inputPath, outputPath, target, options = {}) {
   }
 
   if (target === "xlsx") {
-    const model = await extractComplexPdfTableModel(inputPath);
+    const model = await extractComplexPdfTableModel(inputPath, { ...options, classification });
     assertPdfTableOcrQuality(model);
+    reportConversionProgress({ stage: "converting" });
     await writePdfTableWorkbook(model, outputPath);
     return;
   }
@@ -887,6 +902,8 @@ async function loadPdfForPageCopy(inputPath) {
 }
 
 async function splitPdfToZip(inputPath, outputPath, options = {}) {
+  throwIfCanceled(options.signal);
+  reportConversionProgress({ stage: "converting" });
   const mode = String(options.splitMode || "page");
   const groupSize = Math.max(1, Math.floor(Number(options.groupSize) || 1));
   const splitPages = mode === "group" ? groupSize : 1;
@@ -896,7 +913,8 @@ async function splitPdfToZip(inputPath, outputPath, options = {}) {
     const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), "flyingmouse-pdf-split-"));
     try {
       const prefix = path.join(tempDir, "page-%d.pdf");
-      await run(QPDF_PATH, [`--split-pages=${splitPages}`, inputPath, prefix], { timeout: 1000 * 60 * 5 });
+      await run(QPDF_PATH, [`--split-pages=${splitPages}`, inputPath, prefix], { timeout: 1000 * 60 * 5, signal: options.signal });
+      throwIfCanceled(options.signal);
       const entries = (await fsp.readdir(tempDir))
         .filter((name) => name.endsWith(".pdf"))
         .sort()
@@ -919,6 +937,8 @@ async function splitPdfToZip(inputPath, outputPath, options = {}) {
       if (!entries.length) {
         throw new Error("PDF 拆分失败，未生成任何页面。");
       }
+      // Generated pages do not measure the ZIP write still pending.
+      reportConversionProgress({ stage: "converting" });
       await zipFiles(entries, outputPath);
     } finally {
       await fsp.rm(tempDir, { recursive: true, force: true }).catch(() => {});
@@ -929,10 +949,12 @@ async function splitPdfToZip(inputPath, outputPath, options = {}) {
   // 回退：pdf-lib 使用同一分组大小（不依赖 qpdf）
   const src = await loadPdfForPageCopy(inputPath);
   assertPdfPages(src.getPageCount());
+  reportConversionProgress({ stage: "converting", completed: 0, total: src.getPageCount(), unit: "pages" });
   const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), "flyingmouse-pdf-split-"));
   try {
     const entries = [];
     for (let index = 0; index < src.getPageCount(); index += splitPages) {
+      throwIfCanceled(options.signal);
       const single = await PDFDocument.create();
       const end = Math.min(index + splitPages, src.getPageCount());
       const indices = Array.from({ length: end - index }, (_, offset) => index + offset);
@@ -945,36 +967,51 @@ async function splitPdfToZip(inputPath, outputPath, options = {}) {
       const pagePath = path.join(tempDir, archiveName);
       await fsp.writeFile(pagePath, await single.save());
       entries.push({ inputPath: pagePath, archiveName });
+      reportConversionProgress({ stage: "converting", completed: end, total: src.getPageCount(), unit: "pages" });
     }
     if (!entries.length) {
       throw new Error("PDF 拆分失败，未生成任何页面。");
     }
+    reportConversionProgress({ stage: "converting" });
     await zipFiles(entries, outputPath);
   } finally {
     await fsp.rm(tempDir, { recursive: true, force: true }).catch(() => {});
   }
 }
 
-async function mergePdfFiles(pdfFiles, outputPath) {
+async function mergePdfFiles(pdfFiles, outputPath, options = {}) {
+  throwIfCanceled(options.signal);
+  reportConversionProgress({ stage: "merging", completed: 0, total: pdfFiles.length || null, unit: "files" });
   const merged = await PDFDocument.create();
   let totalPages = 0;
+  let completedFiles = 0;
   for (const file of pdfFiles) {
+    throwIfCanceled(options.signal);
     const src = await loadPdfForPageCopy(file.inputPath);
     totalPages += src.getPageCount();
     assertPdfPages(totalPages);
     const pages = await merged.copyPages(src, src.getPageIndices());
+    throwIfCanceled(options.signal);
     pages.forEach((page) => merged.addPage(page));
+    options.onProgress?.({ stage: "merging", completedPages: totalPages });
+    reportConversionProgress({ stage: "merging", completed: ++completedFiles, total: pdfFiles.length, unit: "files" });
   }
+  throwIfCanceled(options.signal);
+  reportConversionProgress({ stage: "merging" });
   const bytes = await merged.save();
+  throwIfCanceled(options.signal);
   if (!bytes.length) {
     throw new Error("PDF 合并失败，未生成任何内容。");
   }
   await fsp.writeFile(outputPath, bytes);
 }
 
-async function renderPdfPages(inputPath, target = "png", dpi = 150, { ocr = false } = {}) {
+async function renderPdfPages(inputPath, target = "png", dpi = 150, { ocr = false, signal } = {}) {
+  throwIfCanceled(signal);
   const sourcePdf = await PDFDocument.load(await fsp.readFile(inputPath), { ignoreEncryption: true });
-  assertPdfPages(sourcePdf.getPageCount(), { ocr });
+  const pageCount = sourcePdf.getPageCount();
+  assertPdfPages(pageCount, { ocr });
+  reportConversionProgress({ stage: "converting", completed: 0, total: pageCount, unit: "pages" });
   if (!(await commandExists(PDFTOPPM_PATH, ["-v"]))) {
     throw new Error("PDF 转图片引擎未启用。请确认安装包内置的 Poppler 文件完整。");
   }
@@ -983,7 +1020,27 @@ async function renderPdfPages(inputPath, target = "png", dpi = 150, { ocr = fals
   try {
     const prefix = path.join(tempDir, "page");
     const formatArg = target === "jpg" ? "-jpeg" : "-png";
-    await run(PDFTOPPM_PATH, [formatArg, "-cropbox", "-r", String(dpi), inputPath, prefix], { timeout: 1000 * 60 * 20 });
+    const report = captureConversionProgressReporter();
+    let pending = "", completed = 0, active = true;
+    try {
+      await run(PDFTOPPM_PATH, [formatArg, "-cropbox", "-r", String(dpi), "-progress", inputPath, prefix], {
+        timeout: 1000 * 60 * 20, signal, onStderr(chunk) {
+          if (!active || signal?.aborted) return;
+          pending += chunk.toString("utf8");
+          let end;
+          while ((end = pending.indexOf("\n")) !== -1) {
+            const line = pending.slice(0, end).trim(); pending = pending.slice(end + 1);
+            const match = /^(\d+)\s+(\d+)\s+/.exec(line);
+            if (match && Number(match[2]) === pageCount && Number(match[1]) > completed && Number(match[1]) <= pageCount) {
+              completed = Number(match[1]);
+              report({ stage: "converting", completed, total: pageCount, unit: "pages" });
+            }
+          }
+          if (pending.length > 16384) pending = "";
+        }
+      });
+    } finally { active = false; }
+    throwIfCanceled(signal);
     const ext = target === "jpg" ? ".jpg" : ".png";
     const files = (await fsp.readdir(tempDir))
       .filter((file) => file.toLowerCase().endsWith(ext))
@@ -991,6 +1048,7 @@ async function renderPdfPages(inputPath, target = "png", dpi = 150, { ocr = fals
       .map((file) => path.join(tempDir, file));
 
     if (!files.length) throw new Error("PDF 转图片失败，未生成任何页面图片。");
+    reportConversionProgress({ stage: "validating" });
     return { tempDir, files };
   } catch (error) {
     await fsp.rm(tempDir, { recursive: true, force: true }).catch(() => {});
@@ -1001,19 +1059,23 @@ async function renderPdfPages(inputPath, target = "png", dpi = 150, { ocr = fals
 // PDF 页面 → 散图集合（不再无脑打 zip）。命名按源文件名区分：
 // 单页 = <base>.<target>（直接可存），多页 = <base>-第N页.<target> 打包 zip。
 // webp 目标：poppler 只出 png/jpg，先渲 png 再 sharp 二跳（实测编码器可用）。
-async function emitPdfPageImages(inputPath, baseName, target) {
+async function emitPdfPageImages(inputPath, baseName, target, options = {}) {
+  throwIfCanceled(options.signal);
   const renderTarget = target === "webp" ? "png" : target;
-  const rendered = await renderPdfPages(inputPath, renderTarget, 300);
+  const rendered = await renderPdfPages(inputPath, renderTarget, 300, options);
   try {
     const files = [];
+    if (target === "webp") reportConversionProgress({ stage: "converting", completed: 0, total: rendered.files.length, unit: "pages" });
     const single = rendered.files.length === 1;
     for (let index = 0; index < rendered.files.length; index += 1) {
+      throwIfCanceled(options.signal);
       let filePath = rendered.files[index];
       if (target === "webp") {
         const sharp = require("sharp");
         const webpPath = path.join(rendered.tempDir, `page-${index + 1}.webp`);
         await sharp(filePath).webp({ quality: 90 }).toFile(webpPath);
         filePath = webpPath;
+        reportConversionProgress({ stage: "converting", completed: index + 1, total: rendered.files.length, unit: "pages" });
       }
       files.push({
         filePath,
@@ -1027,9 +1089,10 @@ async function emitPdfPageImages(inputPath, baseName, target) {
   }
 }
 
-async function convertPdfPagesToImagesZip(inputPath, outputPath, target) {
-  const rendered = await renderPdfPages(inputPath, target, 300);
+async function convertPdfPagesToImagesZip(inputPath, outputPath, target, options = {}) {
+  const rendered = await renderPdfPages(inputPath, target, 300, options);
   try {
+    reportConversionProgress({ stage: "converting" });
     await zipFiles(
       rendered.files.map((file, index) => ({
         inputPath: file,
@@ -1099,10 +1162,12 @@ async function ocrScannedPdfPages(inputPath) {
   try {
     worker = await createOcrWorker();
     const pages = [];
+    reportConversionProgress({ stage: "recognizing", completed: 0, total: rendered.files.length, unit: "pages" });
     for (let index = 0; index < rendered.files.length; index += 1) {
-      const text = await recognizeImageTextWithWorker(worker, rendered.files[index]);
+      const text = await recognizeImageTextWithWorker(worker, rendered.files[index], { pageNumber: index + 1 });
       // 中文 OCR 拆字空格合并（`纳税 人 名 称` → `纳税人名称`），提升扫描件文本可读性
       pages.push({ name: `Page ${index + 1}`, text: String(mergeCnSpaces(text) || "").trim() });
+      reportConversionProgress({ stage: "recognizing", completed: pages.length, total: rendered.files.length, unit: "pages" });
     }
     if (!pages.some((page) => page.text)) {
       throw new Error("OCR 没有识别出文字。请确认 PDF 扫描页清晰、文字方向正确。");
@@ -1125,6 +1190,7 @@ async function convertPresentationToImages(inputPath, outputPath, originalName, 
     const base = safeBaseName(originalName);
     const emitted = await emitPdfPageImages(pdfPath, base, target);
     try {
+      reportConversionProgress({ stage: "converting" });
       await zipFiles(
         emitted.files.map((item) => ({ inputPath: item.filePath, archiveName: item.name })),
         outputPath

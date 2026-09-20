@@ -8,7 +8,8 @@ const STAGING_EXCLUDED_TESTS = new Set([
   "tests/pe-metadata.test.js",
   "tests/build-engine-manifest.test.js",
   "tests/pandoc-engine.test.js",
-  "tests/public-package.test.js"
+  "tests/public-package.test.js",
+  "tests/distribution-footprint.test.js"
 ]);
 
 const REQUIRED_RUNTIME_FILES = [
@@ -23,6 +24,7 @@ const REQUIRED_RUNTIME_FILES = [
   "pdf-structure-score.js",
   "pdf-structure-engine.js",
   "text-conversion.js",
+  "text-encoding.js",
   "office-engine.js",
   "office-quality.js",
   "diagnostics.js",
@@ -156,6 +158,9 @@ function stageSourceEntries(basePackage) {
 
   const entries = new Set(["build", "tests", "win7-build-profile.js", ...REQUIRED_RUNTIME_FILES]);
   for (const pattern of basePackage.build.files) {
+    // Keep exclusions in build.files for electron-builder, but do not treat
+    // them as source paths when preparing the independent legacy workspace.
+    if (pattern.startsWith("!")) continue;
     if (pattern === "node_modules" || pattern.startsWith("node_modules/")) continue;
     if (pattern.endsWith("/**/*")) {
       entries.add(pattern.slice(0, -5));

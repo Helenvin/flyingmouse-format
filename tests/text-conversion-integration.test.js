@@ -212,12 +212,9 @@ test("capabilities expose stable conversion limits and Sharp keeps pixel protect
   const response = await fetch(`${baseUrl}/api/capabilities`);
   assert.equal(response.status, 200);
   const capabilities = await response.json();
-  assert.deepEqual(capabilities.limits, {
-    maxImagePixels: Number.MAX_SAFE_INTEGER,
-    maxImageDimension: Number.MAX_SAFE_INTEGER,
-    maxImagePdfPixels: Number.MAX_SAFE_INTEGER,
-    maxBatchBytes: Number.MAX_SAFE_INTEGER
-  });
+  assert.deepEqual(capabilities.limits, require('../resource-policy').LIMITS);
+  assert.ok(capabilities.limits.maxImagePixels < 100_000_000);
+  assert.ok(capabilities.limits.maxBatchBytes < Number.MAX_SAFE_INTEGER);
   assert.deepEqual(capabilities.groups.image.experimentalInputs, [...experimentalInputsByCategory.image, ...(DCRAW_PATH ? rawInput : [])].sort());
   assert.deepEqual(capabilities.groups.document.experimentalInputs, ["wpd", "wps", "wpt"]);
   assert.deepEqual(capabilities.groups.spreadsheet.experimentalInputs, ["et", "ett"]);
@@ -246,7 +243,7 @@ test("packaging and Win7 staging include the new runtime modules", () => {
   const packageJson = require("../package.json");
   const source = require("node:fs").readFileSync(path.join(__dirname, "..", "win7-build-profile.js"), "utf8");
   assert.ok(packageJson.build.files.includes("pdf-classifier.js"), "pdf-classifier.js is missing from build.files");
-  for (const file of ["resource-policy.js", "text-conversion.js", "pdf-table-extractor.js", "pdf-table-runtime.js", "config.js", "utils.js", "media.js", "zip-util.js", "image.js", "ocr.js", "pdfjs.js", "pdf-table.js", "pdf.js", "text-docx.js", "office-convert.js"]) {
+  for (const file of ["resource-policy.js", "text-conversion.js", "text-encoding.js", "pdf-table-extractor.js", "pdf-table-runtime.js", "config.js", "utils.js", "media.js", "zip-util.js", "image.js", "ocr.js", "pdfjs.js", "pdf-table.js", "pdf.js", "text-docx.js", "office-convert.js"]) {
     assert.ok(packageJson.build.files.includes(file), `${file} is missing from build.files`);
     assert.match(source, new RegExp(`["]${file.replace(".", "\\.")}["]`));
   }

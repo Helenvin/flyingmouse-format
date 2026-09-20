@@ -6,6 +6,9 @@ const os = require("os");
 const path = require("path");
 const yauzl = require("yauzl");
 const yazl = require("yazl");
+const { Readable } = require("stream");
+const { throwIfCanceled } = require("./conversion-cancellation");
+const { captureConversionProgressReporter } = require("./conversion-progress");
 
 const { htmlToMarkdown, markdownToHtml } = require("./text-conversion");
 const { xmlToJson } = require("./xml-json");
@@ -66,18 +69,24 @@ function splitChapters(raw, source) {
     }
     return parts.filter((part) => part.body || part.title);
   }
-  // txt/html：按空行分块，合并小段
-  const paragraphs = text.split(/\n\s*\n/).map((block) => block.trim()).filter(Boolean);
+  // HTML cannot be sliced through tags. Keep its markup intact; lazy ZIP
+  // compression below still prevents one compressor per paragraph.
+  if (source === "html" || source === "htm") return [{ title: "正文", body: text }];
+  // Keep every character (including blank lines). Prefer a paragraph boundary
+  // in the latter half of each bounded chunk; giant paragraphs are split at a
+  // Unicode-safe boundary instead of creating one unbounded XHTML document.
   const parts = [];
-  let buffer = "";
-  for (const paragraph of paragraphs) {
-    buffer = buffer ? `${buffer}\n\n${paragraph}` : paragraph;
-    if (buffer.length > 2000 || parts.length >= 99) {
-      parts.push({ title: `第 ${parts.length + 1} 节`, body: buffer });
-      buffer = "";
+  const maxCharacters = 32768;
+  for (let start = 0; start < text.length;) {
+    let end = Math.min(text.length, start + maxCharacters);
+    if (end < text.length) {
+      const boundary = text.slice(start, end).lastIndexOf("\n\n");
+      if (boundary >= maxCharacters / 2) end = start + boundary + 2;
+      if (/[\uD800-\uDBFF]/.test(text[end - 1]) && /[\uDC00-\uDFFF]/.test(text[end])) end--;
     }
+    parts.push({ title: `第 ${parts.length + 1} 节`, body: text.slice(start, end) });
+    start = end;
   }
-  if (buffer) parts.push({ title: `第 ${parts.length + 1} 节`, body: buffer });
   return parts.length ? parts : [{ title: "正文", body: text }];
 }
 
@@ -86,28 +95,31 @@ function markdownToXhtml(source, body) {
     .replace(/<(br|hr|img)\b([^>]*?)(?<!\/)\s*>/gi, "<$1$2 />");
 }
 
-async function convertTextToEpub(raw, source, originalName, outputPath) {
+async function convertTextToEpub(raw, source, originalName, outputPath, options = {}) {
+  throwIfCanceled(options.signal);
+  const report = captureConversionProgressReporter();
   const title = cleanTitle(path.basename(originalName || "book", path.extname(originalName || "")));
   const chapters = splitChapters(raw, source);
-  const zip = new yazl.ZipFile();
-  // EPUB 规范：mimetype 必须是第一个条目且不压缩
-  zip.addBuffer(Buffer.from("application/epub+zip"), "mimetype", { compressionLevel: 0 });
-  zip.addBuffer(Buffer.from(`<?xml version="1.0" encoding="UTF-8"?>
+  const documents = [];
+  documents.push({ name: "META-INF/container.xml", content: () => `<?xml version="1.0" encoding="UTF-8"?>
 <container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
   <rootfiles>
     <rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>
   </rootfiles>
-</container>`), "META-INF/container.xml");
+</container>` });
 
   const manifest = [`<item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>`];
   const spine = [];
-  const chapterDocs = [];
   for (let index = 0; index < chapters.length; index += 1) {
     const id = `chapter-${index + 1}`;
+    manifest.push(`<item id="${id}" href="${id}.xhtml" media-type="application/xhtml+xml"/>`);
+    spine.push(`<itemref idref="${id}"/>`);
+  }
+  function chapterDocument(index) {
     const xhtml = source === "md" || source === "markdown" ? markdownToXhtml(source, chapters[index].body)
       : source === "html" || source === "htm" ? chapters[index].body
         : `<p>${escapeHtmlText(chapters[index].body).replace(/\n/g, "<br />")}</p>`;
-    const doc = `<?xml version="1.0" encoding="UTF-8"?>
+    return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE html>
 <html xmlns="http://www.w3.org/1999/xhtml">
 <head><title>${escapeXmlText(chapters[index].title)}</title></head>
@@ -116,16 +128,13 @@ async function convertTextToEpub(raw, source, originalName, outputPath) {
 ${xhtml}
 </body>
 </html>`;
-    chapterDocs.push(doc);
-    manifest.push(`<item id="${id}" href="${id}.xhtml" media-type="application/xhtml+xml"/>`);
-    spine.push(`<itemref idref="${id}"/>`);
   }
 
   const navPoints = chapters.map((chapter, index) =>
     `    <navPoint id="nav-${index + 1}" playOrder="${index + 1}"><navLabel><text>${escapeXmlText(chapter.title)}</text></navLabel><content src="chapter-${index + 1}.xhtml"/></navPoint>`
   ).join("\n");
 
-  zip.addBuffer(Buffer.from(`<?xml version="1.0" encoding="UTF-8"?>
+  documents.push({ name: "OEBPS/content.opf", content: () => `<?xml version="1.0" encoding="UTF-8"?>
 <package xmlns="http://www.idpf.org/2007/opf" version="2.0" unique-identifier="bookid">
   <metadata xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:opf="http://www.idpf.org/2007/opf">
     <dc:title>${escapeXmlText(title)}</dc:title>
@@ -138,26 +147,124 @@ ${manifest.join("\n")}
   <spine toc="ncx">
 ${spine.join("\n")}
   </spine>
-</package>`), "OEBPS/content.opf");
-  zip.addBuffer(Buffer.from(`<?xml version="1.0" encoding="UTF-8"?>
+</package>` });
+  documents.push({ name: "OEBPS/toc.ncx", content: () => `<?xml version="1.0" encoding="UTF-8"?>
 <ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">
   <head><meta name="dtb:uid" content="bookid"/></head>
   <docTitle><text>${escapeXmlText(title)}</text></docTitle>
   <navMap>
 ${navPoints}
   </navMap>
-</ncx>`), "OEBPS/toc.ncx");
-  for (let index = 0; index < chapterDocs.length; index += 1) {
-    zip.addBuffer(Buffer.from(chapterDocs[index]), `OEBPS/chapter-${index + 1}.xhtml`);
+</ncx>` });
+  for (let index = 0; index < chapters.length; index += 1) {
+    documents.push({ name: `OEBPS/chapter-${index + 1}.xhtml`, chapter: index + 1, content: () => chapterDocument(index) });
   }
-
-  await new Promise((resolve, reject) => {
-    const output = fs.createWriteStream(outputPath);
-    output.on("close", resolve);
-    output.on("error", reject);
-    zip.outputStream.pipe(output);
-    zip.end();
+  report({ stage: "converting", completed: 0, total: chapters.length, unit: "chapters" });
+  await writeEpubArchive(outputPath, documents, options.signal, completed => {
+    report({ stage: "converting", completed, total: chapters.length, unit: "chapters" });
   });
+  report({ stage: "validating" });
+}
+
+// yazl.addBuffer starts deflate immediately for every entry. Lazy streams pump
+// exactly one entry at a time and construct only the current XHTML buffer.
+async function writeEpubArchive(outputPath, documents, signal, onChapter) {
+  const zip = new yazl.ZipFile();
+  let created = false, identity = null, pendingChapter = 0, writeError = null, outputFinished = false, archiveEnded = false;
+  const output = fs.createWriteStream(outputPath, { flags: "wx" });
+  try {
+    await new Promise((resolve, reject) => {
+      let settled = false;
+      const fail = error => {
+        if (settled) return;
+        settled = true;
+        output.destroy();
+        zip.outputStream.destroy();
+        reject(error);
+      };
+      const completeChapter = () => {
+        if (pendingChapter) { const completed = pendingChapter; pendingChapter = 0; onChapter(completed); }
+      };
+      // A destination failure must not leave yazl's private compressor blocked
+      // on backpressure. Drain its current entry; the next lazy callback runs
+      // only after that compressor ends and will reject without starting more.
+      const destinationFailed = error => {
+        writeError ||= error;
+        if (!created || archiveEnded) { fail(writeError); return; }
+        zip.outputStream.unpipe(output);
+        zip.outputStream.resume();
+      };
+      zip.on("error", fail);
+      zip.outputStream.on("error", fail);
+      output.on("error", destinationFailed);
+      output.on("finish", () => { outputFinished = true; });
+      output.on("close", () => {
+        if (settled) return;
+        if (!outputFinished) {
+          destinationFailed(writeError || Object.assign(new Error("EPUB output closed before completion"), { code: "EPUB_WRITE_FAILED" }));
+          return;
+        }
+        try { throwIfCanceled(signal); } catch (error) { fail(error); return; }
+        settled = true;
+        resolve();
+      });
+      zip.outputStream.on("end", () => {
+        archiveEnded = true;
+        if (settled) return;
+        try {
+          if (writeError) throw writeError;
+          completeChapter();
+          throwIfCanceled(signal);
+        } catch (error) { fail(error); }
+      });
+      output.once("open", () => {
+        created = true;
+        if (settled) { output.destroy(); return; }
+        try {
+          identity = fs.fstatSync(output.fd);
+          throwIfCanceled(signal);
+          zip.outputStream.pipe(output);
+          // EPUB requires this first entry to have known sizes and no deflate.
+          zip.addBuffer(Buffer.from("application/epub+zip"), "mimetype", { compressionLevel: 0 });
+          for (const document of documents) {
+            zip.addReadStreamLazy(document.name, callback => {
+              // Yield between entries so cancellation, status polling and the
+              // desktop remain responsive while a large book is being written.
+              setImmediate(() => {
+                try {
+                  if (settled) { callback(writeError || new Error("EPUB archive already closed")); return; }
+                  if (output.destroyed && !outputFinished) {
+                    destinationFailed(output.errored || writeError || Object.assign(new Error("EPUB output closed before completion"), { code: "EPUB_WRITE_FAILED" }));
+                  }
+                  if (writeError) throw writeError;
+                  completeChapter();
+                  throwIfCanceled(signal);
+                  const input = Readable.from([Buffer.from(document.content())]);
+                  input.on("error", error => zip.emit("error", error));
+                  pendingChapter = document.chapter || 0;
+                  callback(null, input);
+                } catch (error) { callback(error); }
+              });
+            });
+          }
+          zip.end();
+        } catch (error) { fail(error); }
+      });
+    });
+  } catch (error) {
+    if (!output.closed) await new Promise(resolve => output.once("close", resolve));
+    // Only remove the file we exclusively created, never a replacement at the
+    // same path or a pre-existing destination rejected by the wx open.
+    if (created && identity) {
+      try {
+        const current = await fsp.lstat(outputPath);
+        if (current.isFile() && current.dev === identity.dev && current.ino === identity.ino) await fsp.unlink(outputPath);
+      } catch (cleanupError) {
+        if (cleanupError.code !== "ENOENT") error.cleanupError = cleanupError.message;
+      }
+    }
+    throw error;
+  }
 }
 
 // ---- EPUB 解析 ----

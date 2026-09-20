@@ -5,6 +5,7 @@ const fs = require("node:fs");
 const fsp = require("node:fs/promises");
 const http = require("node:http");
 const path = require("node:path");
+const os = require("node:os");
 const { randomUUID } = require("node:crypto");
 const { saveConvertedResult } = require("./save-converted-result");
 
@@ -14,6 +15,7 @@ const VALUE_OPTIONS = new Map([
   ["--output-dir", "outputDir"],
   ["--video-codec", "videoCodec"],
   ["--pdf-action", "pdfAction"],
+  ["--text-encoding", "textEncoding"],
   ["--password", "password"]
 ]);
 
@@ -32,6 +34,7 @@ Options:
   --video-codec <h264|h265|av1>
   --pdf-action <encrypt|decrypt>
   --password <password>       PDF password (never printed in JSON output)
+  --text-encoding <encoding>  EPUB source: auto, utf-8, gb18030, utf-16le, utf-16be
   --json                      Stable machine-readable output
   -h, --help                  Show this help
 
@@ -239,11 +242,51 @@ function printResult(payload, json) {
   }
 }
 
+let cliActive = false;
+
+async function createCliWorkspace() {
+  // An explicit runtime override is a caller-owned parent, never a cleanup target.
+  const parent = path.resolve(process.env.FLYINGMOUSE_RUNTIME_DIR || os.tmpdir());
+  await fsp.mkdir(parent, { recursive: true });
+  const realParent = await fsp.realpath(parent);
+  const root = await fsp.mkdtemp(path.join(realParent, `flyingmouse-cli-${process.pid}-`));
+  const identity = await fsp.lstat(root);
+  return {
+    runtimeDir: path.join(root, "runtime"),
+    async dispose() {
+      const current = await fsp.lstat(root).catch(error => {
+        if (error.code === "ENOENT") return null;
+        throw error;
+      });
+      if (!current) return;
+      // Verify the exact owned directory before recursive deletion. A changed
+      // symlink or directory identity is not ours to remove.
+      if (!current.isDirectory() || current.isSymbolicLink()
+        || current.dev !== identity.dev || current.ino !== identity.ino
+        || path.dirname(root) !== realParent || await fsp.realpath(root) !== root) {
+        throw new Error("CLI temporary workspace changed; cleanup was refused.");
+      }
+      await fsp.rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+    }
+  };
+}
+
 async function executeCli(parsed, runtime) {
   if (parsed.command === "help" || parsed.options.help) return { help: true };
-  const { startServer } = runtime || require("./server");
-  const started = await startServer(0);
+  // config and conversion modules capture their runtime directory at load time.
+  // Never reuse a GUI/shared server's already initialized runtime for CLI cleanup.
+  if (cliActive || (!runtime && require.cache[require.resolve("./config")])) {
+    throw new Error("Run each CLI invocation in its own process before loading the conversion server.");
+  }
+  cliActive = true;
+  const previousRuntime = process.env.FLYINGMOUSE_RUNTIME_DIR;
+  let workspace;
+  let started;
   try {
+    workspace = await createCliWorkspace();
+    process.env.FLYINGMOUSE_RUNTIME_DIR = workspace.runtimeDir;
+    const { startServer } = runtime || require("./server");
+    started = await startServer(0);
     const baseUrl = started.url;
     if (parsed.command === "capabilities") {
       return await requestJson(`${baseUrl}/api/capabilities`);
@@ -265,6 +308,7 @@ async function executeCli(parsed, runtime) {
         results.push(await postMultipart(`${baseUrl}/api/convert`, {
           targetFormat: parsed.options.to,
           videoCodec: parsed.options.videoCodec,
+          textEncoding: parsed.options.textEncoding,
           pdfAction: parsed.options.pdfAction,
           password: parsed.options.password
         }, [file], "file"));
@@ -299,7 +343,17 @@ async function executeCli(parsed, runtime) {
     }
     return { ok: true, command: parsed.command, outputs };
   } finally {
-    await new Promise((resolve) => started.server.close(resolve));
+    try {
+      if (started) await new Promise((resolve) => started.server.close(resolve));
+    } finally {
+      try {
+        await workspace?.dispose();
+      } finally {
+        if (previousRuntime === undefined) delete process.env.FLYINGMOUSE_RUNTIME_DIR;
+        else process.env.FLYINGMOUSE_RUNTIME_DIR = previousRuntime;
+        cliActive = false;
+      }
+    }
   }
 }
 

@@ -15,6 +15,7 @@ const { loadPdfjs } = require("./pdfjs");
 const { imageCoverageFromOperators } = require("./pdf-classifier");
 const { LIMITS, assertPdfPages } = require("./resource-policy");
 const { buildPdfTableWorkbook, detectTableLinesFromRaw } = require("./pdf-table-runtime");
+const { reportConversionProgress } = require("./conversion-progress");
 
 function groupPdfItemsIntoLines(items, viewport) {
   // Use the displayed page coordinate system, including /Rotate and CropBox.
@@ -242,6 +243,7 @@ function camelotTablesToModel(tables) {
     });
     sheets.push({
       name: `P${String(table.page).padStart(3, "0")}-T${String(index + 1).padStart(2, "0")}`,
+      pages: [Number(table.page)],
       rows: Array.isArray(table.cells) ? table.cells : [],
       merges: [],
       cellConfidence: undefined
@@ -270,15 +272,7 @@ function camelotTablesQualityOk(tables) {
   return avgAccuracy >= 60 && fillRatio >= 0.5;
 }
 
-async function extractComplexPdfTableModel(inputPath) {
-  // 优先用文档引擎（docengine table = camelot）提取表格；引擎缺失、无结果或质量差时回退到 PDF.js 自研提取。
-  if (DOCENGINE_PATH) {
-    const tables = await extractTablesViaDocengine(inputPath);
-    if (camelotTablesQualityOk(tables)) {
-      return camelotTablesToModel(tables);
-    }
-  }
-
+async function extractComplexPdfTableModel(inputPath, options = {}) {
   const pdfjsLib = await loadPdfjs();
   const data = new Uint8Array(await fsp.readFile(inputPath));
   const loadingTask = pdfjsLib.getDocument({
@@ -287,49 +281,78 @@ async function extractComplexPdfTableModel(inputPath) {
     useSystemFonts: true,
     isEvalSupported: false
   });
-  const pdf = await loadingTask.promise;
-  assertPdfPages(pdf.numPages);
-  const canRender = await commandExists(PDFTOPPM_PATH, ["-v"]);
-  const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), "flyingmouse-pdf-table-"));
+  let tempDir;
   const rendered = new Map();
   let worker = null;
   let ocrBudgetChecked = false;
-
-  const ensureRendered = async (pageNumber) => {
-    if (!canRender) return null;
-    if (!rendered.has(pageNumber)) rendered.set(pageNumber, renderPdfTablePage(inputPath, pageNumber, tempDir));
-    return rendered.get(pageNumber);
-  };
-
   try {
+    const pdf = await loadingTask.promise;
+    assertPdfPages(pdf.numPages);
+    // An accurate result on one native page says nothing about omitted pages.
+    // Keep accepted native tables, but independently extract every other page.
+    const byPage = new Map();
+    if (options.extractTablesViaDocengine || DOCENGINE_PATH) {
+      const tables = await (options.extractTablesViaDocengine || extractTablesViaDocengine)(inputPath);
+      for (const table of tables) {
+        const pageNumber = Number(table.page);
+        if (!Number.isInteger(pageNumber) || pageNumber < 1 || pageNumber > pdf.numPages) continue;
+        if (options.classification?.pages?.some(page => page.pageNumber === pageNumber && page.kind === "scanned")) continue;
+        if (!byPage.has(pageNumber)) byPage.set(pageNumber, []);
+        byPage.get(pageNumber).push({ ...table, page: pageNumber });
+      }
+    }
+    for (const [pageNumber, tables] of byPage) {
+      if (!camelotTablesQualityOk(tables)) byPage.delete(pageNumber);
+    }
+    const nativeModel = camelotTablesToModel([...byPage.values()].flat().sort((a, b) => a.page - b.page));
+    let completedPages = byPage.size;
+    reportConversionProgress({ stage: "converting", completed: completedPages, total: pdf.numPages, unit: "pages" });
+    if (byPage.size === pdf.numPages) return nativeModel;
+
+    const canRender = Boolean(options.renderPage) || await commandExists(PDFTOPPM_PATH, ["-v"]);
+    tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), "flyingmouse-pdf-table-"));
+    const ensureRendered = async (pageNumber) => {
+      if (!canRender) return null;
+      if (!rendered.has(pageNumber)) rendered.set(pageNumber, renderPdfTablePage(inputPath, pageNumber, tempDir));
+      return rendered.get(pageNumber);
+    };
     async function* pages() {
       for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
+        if (byPage.has(pageNumber)) continue;
         const page = await pdf.getPage(pageNumber);
         try {
           const viewport = page.getViewport({ scale: 200 / 72, rotation: page.rotate || 0 });
+          const textContent = await page.getTextContent();
+          const hasText = textContent.items.some(item => String(item.str || "").trim());
+          const blank = !hasText && (await page.getOperatorList()).fnArray.length === 0;
           yield {
             pageNumber,
             width: viewport.width,
             height: viewport.height,
             viewport,
-            textContent: await page.getTextContent()
+            textContent,
+            blank
           };
+          // The async iterator resumes only after the consumer has finished
+          // this page's native/OCR table extraction, including retries.
+          reportConversionProgress({ stage: "converting", completed: ++completedPages, total: pdf.numPages, unit: "pages" });
         } finally {
           page.cleanup();
         }
       }
     }
 
-    return await buildPdfTableWorkbook(pages(), {
-      renderPage: canRender ? async (page) => {
+    const fallbackModel = await buildPdfTableWorkbook(pages(), {
+      renderPage: options.renderPage || (canRender ? async (page) => {
         const image = await ensureRendered(page.pageNumber);
         const { data: raw, info } = await sharp(image.outputPath, { limitInputPixels: LIMITS.maxImagePixels })
           .grayscale()
           .raw()
           .toBuffer({ resolveWithObject: true });
         return { data: raw, width: info.width, height: info.height, channels: info.channels };
-      } : null,
-      ocrPage: canRender && ocrAvailable() ? async (page) => {
+      } : null),
+      ocrPage: options.ocrPage || (canRender && ocrAvailable() ? async (page) => {
+        reportConversionProgress({ stage: "recognizing", completed: completedPages, total: pdf.numPages, unit: "pages" });
         if (!ocrBudgetChecked) {
           assertPdfPages(pdf.numPages, { ocr: true });
           ocrBudgetChecked = true;
@@ -340,12 +363,17 @@ async function extractComplexPdfTableModel(inputPath) {
         }
         const image = await ensureRendered(page.pageNumber);
         return recognizePdfTablePage(worker, image.outputPath, tempDir, page.pageNumber);
-      } : null
+      } : null)
     });
+    return {
+      sheets: [...nativeModel.sheets, ...fallbackModel.sheets].sort((a, b) => a.pages[0] - b.pages[0]),
+      summary: [...nativeModel.summary, ...fallbackModel.summary].sort((a, b) => a.pageNumber - b.pageNumber),
+      warnings: [...nativeModel.warnings, ...fallbackModel.warnings]
+    };
   } finally {
     if (worker) await worker.terminate().catch(() => {});
     await loadingTask.destroy().catch(() => {});
-    await fsp.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+    if (tempDir) await fsp.rm(tempDir, { recursive: true, force: true }).catch(() => {});
   }
 }
 

@@ -8,6 +8,7 @@ const state = {
   selectionVersion: 0,
   progressValue: 0,
   previewResult: null,
+  previewRequest: null,
   previewOpener: null,
   folderName: "",
   settings: { schemaVersion: 2, targetBySource: {} }
@@ -56,6 +57,8 @@ const fileStrip = document.querySelector("#fileStrip");
 const fileName = document.querySelector("#fileName");
 const fileMeta = document.querySelector("#fileMeta");
 const targetSelect = document.querySelector("#targetSelect");
+const textEncodingField = document.querySelector("#textEncodingField");
+const textEncoding = document.querySelector("#textEncoding");
 const pdfExcelHint = document.querySelector("#pdfExcelHint");
 const videoCodecField = document.querySelector("#videoCodecField");
 const videoCodec = document.querySelector("#videoCodec");
@@ -92,6 +95,9 @@ const progressLabel = document.querySelector("#progressLabel");
 const progressPercent = document.querySelector("#progressPercent");
 const progressTrack = document.querySelector(".progress-track");
 const progressFill = document.querySelector("#progressFill");
+const progressDetails = document.querySelector("#progressDetails");
+const progressElapsed = document.querySelector("#progressElapsed");
+const progressBatch = document.querySelector("#progressBatch");
 const mouseMascot = document.querySelector("#mouseMascot");
 const languageSelect = document.querySelector("#languageSelect");
 const themeSelect = document.querySelector("#themeSelect");
@@ -139,11 +145,14 @@ const messages = {
     "alphaBackground.white": "白色（默认）", "alphaBackground.black": "黑色",
     "alphaBackground.green": "绿色（绿幕）", "alphaBackground.magenta": "洋红（绿幕抠像常用）",
     "pdfPassword.label": "PDF 密码（加密/解密）", "pdfAction.label": "PDF 操作",
-    "pdfAction.split": "拆分 PDF（默认）", "pdfAction.encrypt": "加密 PDF", "pdfAction.decrypt": "解密 PDF",
+    "pdfAction.merge": "合并为一个 PDF", "pdfAction.split": "拆分 PDF（输出 ZIP）", "pdfAction.encrypt": "加密 PDF", "pdfAction.decrypt": "解密 PDF",
     "pdfSplitMode.label": "拆分方式", "pdfSplitMode.page": "逐页拆分（每页一个 PDF）", "pdfSplitMode.group": "每 N 页一组",
     "pdfGroupSize.label": "每几页一组",
     "imagePdfMode.label": "多图转 PDF", "imagePdfMode.merge": "合并为一个 PDF（默认）", "imagePdfMode.separate": "每张图片单独生成 PDF",
     "settings.aria": "转换设置", "progress.label": "转换进度", "status.ready": "选择文件后会显示可用的转换格式。",
+    "textEncoding.label": "源文件编码", "textEncoding.auto": "自动（UTF-8 / UTF-16 BOM）",
+    "textEncoding.utf8": "UTF-8", "textEncoding.gb18030": "GBK / GB18030", "textEncoding.utf16le": "UTF-16LE", "textEncoding.utf16be": "UTF-16BE",
+    "textEncoding.hint": "自动仅识别 UTF-8 或带 BOM 的 UTF-16。GBK 文本请手动选择；批量文本使用同一编码。",
     "formats.aria": "支持格式", "formats.title": "当前支持",
     "formats.description": "文档转换会尽量保留排版；PDF 可导出页面图片，图片和扫描版 PDF 可 OCR 转 TXT。音频仅支持普通格式转换（MP3/WAV/FLAC/AAC/OGG 等），不支持其他音乐平台的加密特殊格式。",
     "sponsor.aria": "支持鼠鼠", "sponsor.close": "收起", "sponsor.title": "请鼠鼠吃小鱼干 🐟",
@@ -187,11 +196,14 @@ const messages = {
     "alphaBackground.white": "White (default)", "alphaBackground.black": "Black",
     "alphaBackground.green": "Green (green screen)", "alphaBackground.magenta": "Magenta (common for chroma key)",
     "pdfPassword.label": "PDF password (encrypt/decrypt)", "pdfAction.label": "PDF action",
-    "pdfAction.split": "Split PDF (default)", "pdfAction.encrypt": "Encrypt PDF", "pdfAction.decrypt": "Decrypt PDF",
+    "pdfAction.merge": "Merge into one PDF", "pdfAction.split": "Split PDF (ZIP output)", "pdfAction.encrypt": "Encrypt PDF", "pdfAction.decrypt": "Decrypt PDF",
     "pdfSplitMode.label": "Split mode", "pdfSplitMode.page": "Split into single pages", "pdfSplitMode.group": "Group every N pages",
     "pdfGroupSize.label": "Pages per group",
     "imagePdfMode.label": "Multiple images to PDF", "imagePdfMode.merge": "Merge into one PDF (default)", "imagePdfMode.separate": "One PDF per image",
     "settings.aria": "Conversion settings", "progress.label": "Conversion progress", "status.ready": "Available target formats appear after you select files.",
+    "textEncoding.label": "Source text encoding", "textEncoding.auto": "Auto (UTF-8 / UTF-16 BOM)",
+    "textEncoding.utf8": "UTF-8", "textEncoding.gb18030": "GBK / GB18030", "textEncoding.utf16le": "UTF-16LE", "textEncoding.utf16be": "UTF-16BE",
+    "textEncoding.hint": "Auto accepts UTF-8 or UTF-16 with a BOM. Select GBK manually for GBK text. All text files in a batch use this encoding.",
     "formats.aria": "Supported formats", "formats.title": "Supported now",
     "formats.description": "Document conversion preserves layout where possible; PDFs can export page images, and images and scanned PDFs can be OCRed to TXT. Audio supports only ordinary formats (MP3/WAV/FLAC/AAC/OGG etc.); encrypted formats from music platforms are not supported.",
     "sponsor.aria": "Support Mouse", "sponsor.close": "Close", "sponsor.title": "Buy Mouse a dried fish 🐟",
@@ -211,7 +223,10 @@ const t = (key, params) => i18n.t(key, params);
 function applyStaticTranslations() {
   document.documentElement.lang = i18n.language;
   languageSelect.value = i18n.language;
-  for (const element of document.querySelectorAll("[data-i18n]")) element.textContent = t(element.dataset.i18n);
+  for (const element of document.querySelectorAll("[data-i18n]")) {
+    if ([statusBox, progressLabel, downloadButton, previewTitle].includes(element)) continue;
+    element.textContent = t(element.dataset.i18n);
+  }
   for (const element of document.querySelectorAll("[data-i18n-aria]")) element.setAttribute("aria-label", t(element.dataset.i18nAria));
   for (const element of document.querySelectorAll("[data-i18n-title]")) element.title = t(element.dataset.i18nTitle);
   for (const element of document.querySelectorAll("[data-i18n-alt]")) element.alt = t(element.dataset.i18nAlt);
@@ -240,10 +255,16 @@ function renderHealth() {
 
 function refreshLanguage() {
   applyStaticTranslations();
+  for (const option of targetSelect.options) {
+    if (option.value) option.textContent = targetFormatLabel(option.value);
+  }
   renderHealth();
   if (state.capabilities) renderFormatTable();
-  if (!state.files.length) setStatus(t("status.ready"));
-  resetProgress();
+  if (state.statusMessage !== undefined) statusBox.textContent = displayMessage(state.statusMessage);
+  else setStatus(() => t("status.ready"));
+  renderProgressText();
+  downloadButton.textContent = state.converted ? `${t("action.save")} ${state.converted.fileName}` : t("action.download");
+  previewTitle.textContent = state.previewResult?.fileName || t("preview.title");
   renderBatchList();
   syncPdfExcelHint();
 }
@@ -319,8 +340,13 @@ function createTextElement(tagName, className, text) {
   return element;
 }
 
+function displayMessage(message) {
+  return typeof message === "function" ? message() : message;
+}
+
 function setStatus(message, type = "") {
-  statusBox.textContent = message;
+  state.statusMessage = message;
+  statusBox.textContent = displayMessage(message);
   statusBox.className = `status-box ${type}`.trim();
 }
 
@@ -343,66 +369,152 @@ function mouseStateForConversion(targetFormat) {
   return "converting";
 }
 
-function setProgress(value, label, type = "") {
-  const safeValue = Math.max(0, Math.min(100, Math.round(value)));
+function setProgress(value, label, type = "", detail = null, percentLabel = null) {
+  const safeValue = Number.isFinite(value) ? Math.max(0, Math.min(100, Math.floor(value))) : null;
   state.progressValue = safeValue;
   progressPanel.hidden = false;
   progressPanel.className = `progress-panel ${type}`.trim();
-  progressLabel.textContent = label;
-  progressPercent.textContent = `${safeValue}%`;
-  progressFill.style.width = `${safeValue}%`;
-  progressTrack.setAttribute("aria-valuenow", String(safeValue));
+  state.progressMessage = label;
+  state.progressDetail = detail;
+  state.progressPercentMessage = percentLabel;
+  progressFill.style.width = `${safeValue || 0}%`;
+  if (safeValue === null) progressTrack.removeAttribute("aria-valuenow");
+  else progressTrack.setAttribute("aria-valuenow", String(safeValue));
+  renderProgressText();
 }
 
-// 不确定进度（单文件长任务：视频/PDF/Office 转码无实时进度，进度条滑动动画代替死板的 0%）
-function setIndeterminateProgress(label) {
-  state.progressValue = 0;
-  progressPanel.hidden = false;
-  progressPanel.className = "progress-panel indeterminate";
-  progressLabel.textContent = label;
-  progressPercent.textContent = "";
-  progressFill.style.width = "";
-  progressTrack.setAttribute("aria-valuenow", "0");
+function renderProgressText() {
+  progressLabel.textContent = state.progressMessage === undefined ? t("progress.label") : displayMessage(state.progressMessage);
+  progressDetails.textContent = state.progressDetail ? displayMessage(state.progressDetail) : "";
+  progressPercent.textContent = state.progressPercentMessage ? displayMessage(state.progressPercentMessage)
+    : state.progressValue === null ? "" : `${state.progressValue}%`;
+  progressTrack.setAttribute("aria-label", progressLabel.textContent);
+  progressTrack.setAttribute("aria-valuetext", [progressPercent.textContent, progressDetails.textContent].filter(Boolean).join(" · "));
+  renderProgressElapsed();
 }
 
-// 长任务目标：转码/转换耗时较长（视频编码、PDF/Office 经 LibreOffice/docengine），无实时进度。
-const LONG_TASK_TARGETS = new Set([
-  "mp4", "mov", "mkv", "webm", "gif",
-  "pdf", "docx", "odt", "rtf", "xlsx", "xls", "ods", "pptx", "odp"
-]);
+const progressStages = {
+  uploading: ["上传文件", "Uploading files"], preparing: ["准备转换", "Preparing conversion"],
+  queued: ["等待转换", "Waiting for conversion"], recognizing: ["识别内容", "Recognizing content"],
+  converting: ["转换文件", "Converting files"], merging: ["合并文件", "Merging files"],
+  validating: ["验证输出", "Validating output"], receiving: ["接收转换结果", "Receiving conversion result"]
+};
+const progressUnits = { bytes: ["字节", "bytes"], pages: ["页", "pages"], files: ["个文件", "files"], seconds: ["秒", "seconds"], chapters: ["章", "chapters"] };
 
-function isLongTaskTarget(target) {
-  return LONG_TASK_TARGETS.has(String(target || "").toLowerCase());
+function setStageProgress(stage, completed = null, total = null, unit = null) {
+  const known = Number.isFinite(completed) && Number.isFinite(total) && total > 0 && completed >= 0 && completed <= total && Object.hasOwn(progressUnits, unit);
+  const stageComplete = known && completed === total;
+  const names = progressStages[stage] || progressStages.preparing;
+  setProgress(known ? (completed / total) * 100 : null,
+    () => i18n.language === "en-US" ? `Current stage progress · ${names[1]}` : `当前阶段进度 · ${names[0]}`, "",
+    () => {
+      if (!known) return i18n.language === "en-US" ? "The current stage percentage cannot be estimated." : "当前阶段无法估算百分比。";
+      const count = value => Number.isInteger(value) ? String(value) : value.toFixed(1);
+      const measured = `${count(completed)} / ${count(total)} ${progressUnits[unit][i18n.language === "en-US" ? 1 : 0]}`;
+      return measured + (stageComplete ? (i18n.language === "en-US" ? " · Waiting for subsequent processing or validation." : " · 等待后续处理或校验。") : "");
+    }, stageComplete ? () => i18n.language === "en-US" ? "Stage complete" : "阶段完成" : null);
 }
 
-function longTaskProgressLabel(target) {
-  const fmt = String(target || "").toLowerCase();
-  if (["mp4", "mov", "mkv", "webm", "gif"].includes(fmt)) {
-    return i18n.language === "en-US"
-      ? "Transcoding video — this can take a few minutes, please wait…"
-      : "正在转码视频，可能需要几分钟，请耐心等待…";
-  }
-  if (fmt === "pdf") {
-    return i18n.language === "en-US"
-      ? "Converting to PDF — this can take a while, please wait…"
-      : "正在转换为 PDF，可能需要一点时间，请耐心等待…";
-  }
-  return i18n.language === "en-US"
-    ? "Converting document — this can take a while, please wait…"
-    : "正在转换文档，可能需要一点时间，请耐心等待…";
+function renderProgressElapsed() {
+  const run = state.progressRun;
+  if (!run) { progressElapsed.textContent = ""; progressBatch.textContent = ""; return; }
+  const elapsed = Math.max(0, (run.endedAt ?? performance.now()) - run.startedAt);
+  const tenths = Math.floor(elapsed / 100), seconds = Math.floor(tenths / 10);
+  const pad = value => String(value).padStart(2, "0");
+  const duration = `${seconds >= 3600 ? `${pad(Math.floor(seconds / 3600))}:` : ""}${pad(Math.floor(seconds / 60) % 60)}:${pad(seconds % 60)}.${tenths % 10}`;
+  progressElapsed.textContent = i18n.language === "en-US"
+    ? `${run.endedAt === null ? "Elapsed this run" : "Total duration"}: ${duration}`
+    : `${run.endedAt === null ? "本次已耗时" : "本次总耗时"}：${duration}`;
+  progressElapsed.title = i18n.language === "en-US"
+    ? "From starting conversion through upload, waiting, conversion and output validation. Saving time is excluded."
+    : "从开始转换计时，包含上传、排队、转换和输出校验，不包含保存文件的时间。";
+  const finished = state.batchResults.filter(item => item.status === "success" || item.status === "error").length;
+  const failed = state.batchResults.filter(item => item.status === "error").length;
+  progressBatch.textContent = i18n.language === "en-US"
+    ? `Files processed: ${finished} / ${run.totalFiles} · ${failed} failed`
+    : `已处理文件：${finished} / ${run.totalFiles} · 失败 ${failed} 个`;
+}
+
+function stopProgressRequest(request = state.progressRequest) {
+  if (!request) return;
+  request.closed = true;
+  request.controller.abort();
+  if (request.timer !== null) clearTimeout(request.timer);
+  if (state.progressRequest === request) state.progressRequest = null;
+}
+
+function beginConversionProgress(totalFiles) {
+  finishConversionProgress();
+  const run = { startedAt: performance.now(), endedAt: null, totalFiles, timer: null };
+  state.progressRun = run;
+  run.timer = setInterval(() => { if (state.progressRun === run) renderProgressElapsed(); }, 250);
+}
+
+function finishConversionProgress() {
+  stopProgressRequest();
+  const run = state.progressRun;
+  if (!run) return;
+  if (run.timer !== null) clearInterval(run.timer);
+  run.timer = null;
+  if (run.endedAt === null) run.endedAt = performance.now();
+  renderProgressElapsed();
+}
+
+// POST owns the result. Polling only describes its current stage; stale or
+// unavailable progress must never complete, fail or mutate another request.
+async function postConversionWithProgress(url, form) {
+  stopProgressRequest();
+  const run = state.progressRun;
+  const request = { id: crypto.randomUUID(), controller: new AbortController(), timer: null, closed: false };
+  state.progressRequest = request;
+  const current = () => !request.closed && state.progressRequest === request && state.progressRun === run;
+  const poll = async () => {
+    try {
+      const response = await fetch(`/api/conversion-progress/${request.id}`, { cache: "no-store", signal: request.controller.signal });
+      if (response.ok && current()) {
+        const snapshot = await response.json();
+        if (current() && snapshot?.id === request.id) {
+          if (snapshot.status === "running" && Object.hasOwn(progressStages, snapshot.stage)) {
+            setStageProgress(snapshot.stage, snapshot.completed, snapshot.total, snapshot.unit);
+          } else if (snapshot.status === "succeeded" || snapshot.status === "failed") {
+            setStageProgress("receiving");
+          }
+        }
+      }
+    } catch { /* A missing progress response is not a failed conversion. */ }
+    finally { if (current()) request.timer = setTimeout(poll, 500); }
+  };
+  try {
+    setStageProgress("uploading");
+    const responsePromise = fetch(url, { method: "POST", body: form, headers: { "X-FlyingMouse-Progress-Id": request.id } });
+    void poll();
+    const response = await responsePromise;
+    const result = await parseResponse(response);
+    if (!response.ok) throw responseError(result, response.status);
+    return result;
+  } finally { stopProgressRequest(request); }
 }
 
 function resetProgress() {
+  finishConversionProgress();
+  state.progressRun = null;
   state.progressValue = 0;
+  state.progressMessage = undefined;
+  state.progressDetail = null;
+  state.progressPercentMessage = null;
   progressPanel.hidden = true;
   progressPanel.className = "progress-panel";
   progressLabel.textContent = t("progress.label");
   progressPercent.textContent = "0%";
   progressFill.style.width = "0%";
   progressTrack.setAttribute("aria-valuenow", "0");
+  renderProgressText();
 }
 
+window.addEventListener("pagehide", () => finishConversionProgress());
+
 function resetDownload() {
+  discardResults([state.converted, ...state.batchResults.map(item => item.result)]);
   state.converted = null;
   state.batchResults = [];
   downloadButton.hidden = true;
@@ -411,6 +523,55 @@ function resetDownload() {
   batchSaveButton.hidden = true;
   previewButton.hidden = true;
   closePreview();
+}
+
+function resultId(result) {
+  return /^\/downloads\/([0-9a-f-]{36})$/i.exec(result?.downloadUrl || "")?.[1];
+}
+
+function resultUseState() {
+  return state.resultUses ||= new Map();
+}
+
+function discardResults(results) {
+  const uses = resultUseState();
+  const ids = [];
+  for (const id of new Set(results.map(resultId).filter(Boolean))) {
+    const use = uses.get(id);
+    if (use?.count) use.discarded = true;
+    else ids.push(id);
+  }
+  // Chunk large queues; the service accepts only exact registered IDs.
+  for (let index = 0; index < ids.length; index += 1000) {
+    void fetch("/api/downloads/release", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids: ids.slice(index, index + 1000) })
+    }).then(response => { if (!response.ok) throw new Error(`HTTP ${response.status}`); })
+      .catch(error => rendererLog("warn", "Unable to release discarded conversion results", error));
+  }
+}
+
+function retainResults(results) {
+  const uses = resultUseState();
+  const ids = [...new Set(results.map(resultId).filter(Boolean))];
+  for (const id of ids) {
+    const use = uses.get(id) || { count: 0, discarded: false };
+    use.count += 1;
+    uses.set(id, use);
+  }
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    const discarded = [];
+    for (const id of ids) {
+      const use = uses.get(id);
+      if (--use.count) continue;
+      uses.delete(id);
+      if (use.discarded) discarded.push({ downloadUrl: `/downloads/${id}` });
+    }
+    discardResults(discarded);
+  };
 }
 
 function clearFile() {
@@ -424,13 +585,15 @@ function clearFile() {
   batchList.hidden = true;
   batchList.replaceChildren();
   setSelectPlaceholder(targetSelect, "", t("target.placeholder"));
+  if (textEncoding) textEncoding.value = "auto";
+  syncTextEncodingField();
   syncPdfExcelHint();
   targetSelect.disabled = true;
   convertButton.disabled = true;
   resetDownload();
   resetProgress();
   setMouseState("upload");
-  setStatus(t("status.ready"));
+  setStatus(() => t("status.ready"));
   setWorkflowStep("select");
 }
 
@@ -473,7 +636,7 @@ async function fetchCapabilities() {
       if ([...targetSelect.options].some(option => option.value === target)) continue;
       const option = document.createElement("option");
       option.value = target;
-      option.textContent = target.toUpperCase();
+      option.textContent = targetFormatLabel(target);
       targetSelect.append(option);
     }
     targetSelect.disabled = !targets.length;
@@ -531,6 +694,14 @@ async function loadTargets(file) {
   return response.json();
 }
 
+function targetFormatLabel(target) {
+  if (target === "docx") return i18n.language === "en-US" ? "Word (DOCX)" : "Word（DOCX）";
+  if (target === "xlsx" && state.fileInfos.length && state.fileInfos.every(info => info.category === "pdf")) {
+    return i18n.language === "en-US" ? "Excel (smart table extraction)" : "Excel（智能表格提取）";
+  }
+  return target.toUpperCase();
+}
+
 function commonTargetsFrom(infos) {
   if (!infos.length) return [];
   const [first, ...rest] = infos;
@@ -576,6 +747,10 @@ function renderBatchList() {
       createTextElement("p", "batch-name", file.isBlankPage ? (i18n.language === "en-US" ? "Blank page" : "空白页") : file.name),
       createTextElement("p", "batch-detail", result.detail || batchStatusLabel(result.status))
     );
+    if (Number.isFinite(result.elapsedMs)) {
+      const seconds = (Math.max(0, result.elapsedMs) / 1000).toFixed(1);
+      main.append(createTextElement("p", "batch-detail", i18n.language === "en-US" ? `Duration: ${seconds} s` : `耗时：${seconds} 秒`));
+    }
 
     const actions = document.createElement("div");
     actions.className = "batch-actions";
@@ -656,7 +831,16 @@ function setBatchResult(index, patch) {
   renderBatchList();
 }
 
+function usesTextEncoding(file, targetFormat) {
+  return targetFormat === "epub" && /^(txt|md|markdown|html|htm|json|log|xml|yaml|yml|csv|tsv)$/.test(extensionOf(file?.name));
+}
+
+function syncTextEncodingField() {
+  if (textEncodingField) textEncodingField.hidden = !state.files.some(file => usesTextEncoding(file, targetSelect.value));
+}
+
 function syncVideoCodecField() {
+  syncTextEncodingField();
   if (!videoCodecField || !videoCodec) return;
   videoCodecField.hidden = !["mp4", "mov", "mkv"].includes(targetSelect.value);
   syncAlphaBackgroundField();
@@ -680,7 +864,7 @@ function syncImagePdfModeField() {
   const hasBlankPage = isMultiImagePdf && state.files.some((file) => file?.isBlankPage);
   if (hasBlankPage && imagePdfMode?.value === "separate") {
     imagePdfMode.value = "merge";
-    setStatus(i18n.language === "en-US"
+    setStatus(() => i18n.language === "en-US"
       ? "Blank pages are only available in merge mode. Switched back to merge."
       : "空白页仅在合并模式可用，已切回合并为一个 PDF。", "");
   }
@@ -694,8 +878,15 @@ function syncImagePdfModeField() {
 function syncPdfActionFields() {
   if (!pdfPasswordField || !pdfActionField) return;
   const isPdfToPdf = targetSelect.value === "pdf"
+    && state.files.length > 0
     && state.fileInfos.length === state.files.length
     && state.fileInfos.every((info) => info.category === "pdf");
+  const mergeOption = pdfAction?.querySelector('option[value="merge"]');
+  if (mergeOption) {
+    mergeOption.hidden = !isPdfToPdf || state.files.length < 2;
+    mergeOption.disabled = mergeOption.hidden;
+  }
+  if (pdfAction?.value === "merge" && state.files.length < 2) pdfAction.value = "";
   const action = pdfAction ? pdfAction.value : "";
   pdfActionField.hidden = !isPdfToPdf;
   // 密码框：仅加密/解密时显示
@@ -723,8 +914,8 @@ function syncPdfExcelHint() {
       return;
     }
     pdfExcelHint.textContent = i18n.language === "en-US"
-      ? `Table recognition depends on scan clarity. ${structure?.enabled === false ? 'The scanned-table engine is unavailable; repair the installation. ' : ''}${limits ? `Structured recognition accepts up to ${limits.maxPages} pages and ${Math.round(limits.maxTotalPixels / 1e6)} million rendered pixels per job; split large PDFs first.` : ''}`
-      : `表格识别效果取决于扫描清晰度。${structure?.enabled === false ? '扫描表格引擎不可用，请修复安装。' : ''}${limits ? `结构识别每次最多 ${limits.maxPages} 页、累计 ${Math.round(limits.maxTotalPixels / 1e6)} 百万渲染像素；较大 PDF 请先拆分。` : ''}`;
+      ? `Table recognition depends on scan clarity. ${structure?.enabled === false ? 'The scanned-table engine is unavailable; repair the installation. ' : ''}${limits ? `Structured recognition accepts up to ${limits.maxPages} pages, with up to ${limits.maxBatchPages} pages and ${Math.round(limits.maxTotalPixels / 1e6)} million rendered pixels per batch; larger PDFs are processed in batches.` : ''}`
+      : `表格识别效果取决于扫描清晰度。${structure?.enabled === false ? '扫描表格引擎不可用，请修复安装。' : ''}${limits ? `结构识别最多 ${limits.maxPages} 页，每批最多 ${limits.maxBatchPages} 页、${Math.round(limits.maxTotalPixels / 1e6)} 百万渲染像素；较大 PDF 自动分批处理。` : ''}`;
   }
 }
 
@@ -735,7 +926,7 @@ async function acceptFiles(fileList, options = {}) {
   const maxBatchBytes = state.capabilities?.limits?.maxBatchBytes || Number.MAX_SAFE_INTEGER;
   const totalBytes = files.reduce((sum, file) => sum + file.size, 0);
   if (!Number.isSafeInteger(totalBytes) || totalBytes > maxBatchBytes) {
-    setStatus(i18n.language === "en-US"
+    setStatus(() => i18n.language === "en-US"
       ? "This batch is too large for this computer. Convert the files in smaller batches."
       : "本批文件总大小超出当前电脑可处理范围，请分批转换。", "error");
     setMouseState("error");
@@ -746,13 +937,15 @@ async function acceptFiles(fileList, options = {}) {
   const selectionVersion = ++state.selectionVersion;
   state.files = files;
   state.fileInfos = [];
-  state.batchResults = files.map(() => ({ status: "pending", detail: "等待转换" }));
+  if (textEncoding) textEncoding.value = "auto";
+  if (textEncodingField) textEncodingField.hidden = true;
   // 文件夹名：来自 <input webkitdirectory> 或拖入文件夹时 File.webkitRelativePath
   // 的第一个路径段（如 "相册2026/001.jpg" -> "相册2026"），用于图片合并 PDF 命名。
   const firstRel = files.find((file) => file.webkitRelativePath);
   const folderName = firstRel ? firstRel.webkitRelativePath.split("/")[0] : "";
   state.folderName = folderName && folderName !== firstRel.webkitRelativePath ? folderName : (options.folderName || "");
   resetDownload();
+  state.batchResults = files.map(() => ({ status: "pending", detail: "等待转换" }));
   resetProgress();
   setMouseState(files.length > 1 ? "batch" : "analyzing");
   setWorkflowStep("analyze");
@@ -766,7 +959,7 @@ async function acceptFiles(fileList, options = {}) {
   targetSelect.disabled = true;
   convertButton.disabled = true;
   setSelectPlaceholder(targetSelect, "", t("target.analyzing"));
-  setStatus(i18n.language === "en-US"
+  setStatus(() => i18n.language === "en-US"
     ? (files.length === 1 ? "Analyzing the file and available target formats..." : `Finding common targets for ${files.length} files...`)
     : (files.length === 1 ? "正在分析文件类型和可用转换格式..." : `正在分析 ${files.length} 个文件的共同转换格式...`));
 
@@ -774,6 +967,8 @@ async function acceptFiles(fileList, options = {}) {
     const infos = await Promise.all(files.map(loadTargets));
     if (state.selectionVersion !== selectionVersion || state.isConverting) return;
     state.fileInfos = infos;
+    // A new selection gets an explicit operation; later format/action edits preserve it.
+    if (pdfAction) pdfAction.value = files.length > 1 && infos.every(info => info.category === "pdf") ? "merge" : "";
     const targets = commonTargetsFrom(infos);
     targetSelect.replaceChildren();
 
@@ -793,16 +988,7 @@ async function acceptFiles(fileList, options = {}) {
     for (const target of targets) {
       const option = document.createElement("option");
       option.value = target;
-      let label = target.toUpperCase();
-      if (target === "pdf" && state.fileInfos.every((info) => info.category === "pdf")) {
-        label = state.files.length > 1
-          ? (i18n.language === "en-US" ? "PDF (merge)" : "PDF（合并）")
-          : (i18n.language === "en-US" ? "PDF (split into pages)" : "PDF（拆分为单页）");
-      }
-      if (target === "xlsx" && state.fileInfos.every((info) => info.category === "pdf")) {
-        label = i18n.language === "en-US" ? "Excel (smart table extraction)" : "Excel（智能表格提取）";
-      }
-      option.textContent = label;
+      option.textContent = targetFormatLabel(target);
       targetSelect.append(option);
     }
 
@@ -818,18 +1004,18 @@ async function acceptFiles(fileList, options = {}) {
     setMouseState(files.length > 1 ? "batch" : "idle");
     if (files.length === 1) {
       const info = infos[0];
-      setStatus(i18n.language === "en-US"
+      setStatus(() => i18n.language === "en-US"
         ? `Detected ${categoryLabel(info.category)}. Available targets: ${targets.map((target) => target.toUpperCase()).join(", ")}.`
         : `识别为${categoryLabel(info.category)}文件，可转换为：${targets.map((target) => target.toUpperCase()).join("、")}。`);
     } else {
-      setStatus(i18n.language === "en-US"
+      setStatus(() => i18n.language === "en-US"
         ? `Selected ${files.length} files. Common targets: ${targets.map((target) => target.toUpperCase()).join(", ")}.`
         : `已选择 ${files.length} 个文件，共同可转换为：${targets.map((target) => target.toUpperCase()).join("、")}。`);
     }
     setWorkflowStep("convert");
   } catch (error) {
     if (state.selectionVersion !== selectionVersion || state.isConverting) return;
-    setStatus(i18n.language === "en-US" ? `Detection failed: ${error.message}` : `识别失败：${error.message}`, "error");
+    setStatus(() => i18n.language === "en-US" ? `Detection failed: ${error.message}` : `识别失败：${error.message}`, "error");
     setWorkflowStep("analyze");
     setMouseState("error");
   }
@@ -869,6 +1055,7 @@ async function convertOneFile(file, targetFormat, options) {
   const form = new FormData();
   form.append("file", file);
   form.append("targetFormat", targetFormat);
+  if (usesTextEncoding(file, targetFormat)) form.append("textEncoding", options.textEncoding || "auto");
   if (["mp4", "mov", "mkv"].includes(targetFormat)) {
     form.append("videoCodec", options.videoCodec);
   }
@@ -882,16 +1069,7 @@ async function convertOneFile(file, targetFormat, options) {
     if (options.groupSize) form.append("groupSize", options.groupSize);
   }
 
-  const response = await fetch("/api/convert", {
-    method: "POST",
-    body: form
-  });
-  const result = await parseResponse(response);
-
-  if (!response.ok) {
-    throw responseError(result, response.status);
-  }
-  return result;
+  return postConversionWithProgress("/api/convert", form);
 }
 
 function isMergedImagePdfConversion(targetFormat) {
@@ -922,23 +1100,14 @@ async function convertImagesToPdf(files, folderName) {
   // blanks=0,3 表示：在上传文件流的第 0 个（最前）和第 3 个文件之后插入空白页
   if (blankAfter.length) form.append("blanks", blankAfter.join(","));
 
-  const response = await fetch("/api/convert-images-to-pdf", {
-    method: "POST",
-    body: form
-  });
-  const result = await parseResponse(response);
-
-  if (!response.ok) {
-    throw responseError(result, response.status);
-  }
-  return result;
+  return postConversionWithProgress("/api/convert-images-to-pdf", form);
 }
 
 async function convertMergedImagesToPdf(files, folderName) {
   files.forEach((_file, index) => {
     setBatchResult(index, { status: "converting", detail: "正在合并到 PDF" });
   });
-  setProgress(35, "正在合并图片");
+  setStageProgress("preparing");
 
   try {
     const result = await convertImagesToPdf(files, folderName);
@@ -955,8 +1124,8 @@ async function convertMergedImagesToPdf(files, folderName) {
     downloadButton.hidden = false;
     previewButton.hidden = false;
     batchSaveButton.hidden = true;
-    setProgress(100, i18n.language === "en-US" ? "Merge complete" : "合并完成", "success");
-    setStatus(i18n.language === "en-US" ? `Images merged into ${result.fileName}.` : `图片已合并为：${result.fileName}。`, "success");
+    setProgress(100, () => i18n.language === "en-US" ? "Merge complete" : "合并完成", "success");
+    setStatus(() => i18n.language === "en-US" ? `Images merged into ${result.fileName}.` : `图片已合并为：${result.fileName}。`, "success");
     setMouseState("success");
     setWorkflowStep("save");
   } catch (error) {
@@ -965,8 +1134,8 @@ async function convertMergedImagesToPdf(files, folderName) {
       detail: error.message || "合并 PDF 失败"
     }));
     renderBatchList();
-    setProgress(100, i18n.language === "en-US" ? "Merge failed" : "合并失败", "error");
-    setStatus(i18n.language === "en-US" ? `PDF merge failed: ${error.message || "Unknown error"}` : `合并 PDF 失败：${error.message || "未知错误"}`, "error");
+    setProgress(null, () => i18n.language === "en-US" ? "Merge failed" : "合并失败", "error");
+    setStatus(() => i18n.language === "en-US" ? `PDF merge failed: ${error.message || "Unknown error"}` : `合并 PDF 失败：${error.message || "未知错误"}`, "error");
     setMouseState("error");
   } finally {
     setConversionBusy(false);
@@ -975,6 +1144,7 @@ async function convertMergedImagesToPdf(files, folderName) {
 
 function isMergedPdfConversion(targetFormat) {
   return targetFormat === "pdf"
+    && pdfAction?.value === "merge"
     && state.files.length > 1
     && state.fileInfos.length === state.files.length
     && state.fileInfos.every((info) => info.category === "pdf");
@@ -982,6 +1152,7 @@ function isMergedPdfConversion(targetFormat) {
 
 function isSplitPdfConversion(targetFormat) {
   return targetFormat === "pdf"
+    && !pdfAction?.value
     && state.files.length === 1
     && state.fileInfos.length === 1
     && state.fileInfos[0].category === "pdf";
@@ -993,23 +1164,14 @@ async function convertPdfsToMerged(files) {
     form.append("files", file);
   }
 
-  const response = await fetch("/api/merge-pdfs", {
-    method: "POST",
-    body: form
-  });
-  const result = await parseResponse(response);
-
-  if (!response.ok) {
-    throw responseError(result, response.status);
-  }
-  return result;
+  return postConversionWithProgress("/api/merge-pdfs", form);
 }
 
 async function convertMergedPdfs(files) {
   files.forEach((_file, index) => {
     setBatchResult(index, { status: "converting", detail: "正在合并到 PDF" });
   });
-  setProgress(35, "正在合并 PDF");
+  setStageProgress("preparing");
 
   try {
     const result = await convertPdfsToMerged(files);
@@ -1026,8 +1188,8 @@ async function convertMergedPdfs(files) {
     downloadButton.hidden = false;
     previewButton.hidden = false;
     batchSaveButton.hidden = true;
-    setProgress(100, i18n.language === "en-US" ? "Merge complete" : "合并完成", "success");
-    setStatus(i18n.language === "en-US" ? `PDF files merged into ${result.fileName}.` : `PDF 已合并为：${result.fileName}。`, "success");
+    setProgress(100, () => i18n.language === "en-US" ? "Merge complete" : "合并完成", "success");
+    setStatus(() => i18n.language === "en-US" ? `PDF files merged into ${result.fileName}.` : `PDF 已合并为：${result.fileName}。`, "success");
     setMouseState("success");
     setWorkflowStep("save");
   } catch (error) {
@@ -1036,8 +1198,8 @@ async function convertMergedPdfs(files) {
       detail: error.message || "合并 PDF 失败"
     }));
     renderBatchList();
-    setProgress(100, i18n.language === "en-US" ? "Merge failed" : "合并失败", "error");
-    setStatus(i18n.language === "en-US" ? `PDF merge failed: ${error.message || "Unknown error"}` : `合并 PDF 失败：${error.message || "未知错误"}`, "error");
+    setProgress(null, () => i18n.language === "en-US" ? "Merge failed" : "合并失败", "error");
+    setStatus(() => i18n.language === "en-US" ? `PDF merge failed: ${error.message || "Unknown error"}` : `合并 PDF 失败：${error.message || "未知错误"}`, "error");
     setMouseState("error");
   } finally {
     setConversionBusy(false);
@@ -1049,7 +1211,7 @@ function setConversionBusy(busy) {
   // Freeze every selection path, including hidden inputs and native keyboard
   // activation. A clear action is not a backend conversion cancellation.
   for (const control of [fileInput, folderInput, dropZone, chooseFolderButton, clearButton,
-    videoCodec, alphaBackground, pdfPassword, pdfAction, pdfSplitMode, pdfGroupSize, imagePdfMode]) {
+    videoCodec, alphaBackground, pdfPassword, pdfAction, pdfSplitMode, pdfGroupSize, imagePdfMode, textEncoding]) {
     if (control) control.disabled = busy;
   }
   convertButton.disabled = busy || !state.files.length || !targetSelect.value;
@@ -1060,118 +1222,131 @@ function setConversionBusy(busy) {
 async function convertCurrentFiles() {
   if (!state.files.length || !targetSelect.value || state.isConverting) return;
 
+  if (state.files.some(file => file?.isBlankPage)) {
+    syncImagePdfModeField();
+    if (!isMergedImagePdfConversion(targetSelect.value)) {
+      setStatus(() => i18n.language === "en-US"
+        ? "Blank pages can only be included when merging images into one PDF. Remove the blank pages or choose PDF merge."
+        : "空白页只能用于图片合并 PDF。请移除空白页，或选择合并为一个 PDF。", "error");
+      return;
+    }
+  }
+
   const targetFormat = targetSelect.value;
   const files = [...state.files];
   const options = {
+    textEncoding: textEncoding?.value || "auto",
     isPdf: state.fileInfos.every((info) => info.category === "pdf"),
     videoCodec: videoCodec?.value || "h264", alphaBackground: alphaBackground?.value || "white",
     pdfAction: pdfAction?.value || "", password: pdfPassword?.value || "",
     splitMode: pdfSplitMode?.value || "", groupSize: pdfGroupSize?.value || ""
   };
   state.selectionVersion += 1;
-  setConversionBusy(true);
-  resetDownload();
-  state.batchResults = files.map(() => ({ status: "pending", detail: "等待转换" }));
-  renderBatchList();
-  setMouseState(mouseStateForConversion(targetFormat));
-  setProgress(0, i18n.language === "en-US" ? "Preparing conversion" : "准备转换");
-  setWorkflowStep("convert");
-  setStatus(i18n.language === "en-US"
-    ? (state.files.length === 1 ? "Converting. PDF, Office/WPS, or video files may take longer..." : `Converting ${state.files.length} files...`)
-    : (state.files.length === 1 ? "正在转换，请稍等。PDF、Office/WPS 或视频文件可能需要更久..." : `正在批量转换 ${state.files.length} 个文件，请稍等...`));
+  try {
+    setConversionBusy(true);
+    beginConversionProgress(files.length);
+    resetDownload();
+    state.batchResults = files.map(() => ({ status: "pending", detail: "等待转换" }));
+    renderBatchList();
+    setMouseState(mouseStateForConversion(targetFormat));
+    setStageProgress("preparing");
+    setWorkflowStep("convert");
+    setStatus(() => i18n.language === "en-US"
+      ? (state.files.length === 1 ? "Converting. PDF, Office/WPS, or video files may take longer..." : `Converting ${state.files.length} files...`)
+      : (state.files.length === 1 ? "正在转换，请稍等。PDF、Office/WPS 或视频文件可能需要更久..." : `正在批量转换 ${state.files.length} 个文件，请稍等...`));
 
-  if (isMergedImagePdfConversion(targetFormat)) {
-    await convertMergedImagesToPdf(files, state.folderName);
-    return;
-  }
-
-  if (isMergedPdfConversion(targetFormat)) {
-    await convertMergedPdfs(files);
-    return;
-  }
-
-  if (isSplitPdfConversion(targetFormat)) {
-    setStatus(i18n.language === "en-US" ? "Splitting the PDF into individual pages..." : "正在把 PDF 拆分为单页文件...");
-  }
-
-  let successCount = 0;
-  let failCount = 0;
-  // 单文件长任务（视频/PDF/Office 转码）无实时进度，用不确定滑动动画代替死板的 0%
-  const useIndeterminate = files.length === 1 && isLongTaskTarget(targetFormat);
-
-  for (let index = 0; index < files.length; index += 1) {
-    const file = files[index];
-    setBatchResult(index, { status: "converting", detail: i18n.language === "en-US" ? `Converting to ${targetFormat.toUpperCase()}` : `正在转换为 ${targetFormat.toUpperCase()}` });
-    if (useIndeterminate) {
-      setIndeterminateProgress(longTaskProgressLabel(targetFormat));
-    } else {
-      setProgress((index / files.length) * 100, i18n.language === "en-US" ? `Converting ${index + 1}/${files.length}` : `正在转换 ${index + 1}/${files.length}`);
+    if (isMergedImagePdfConversion(targetFormat)) {
+      await convertMergedImagesToPdf(files, state.folderName);
+      return;
     }
 
-    try {
-      const result = await convertOneFile(file, targetFormat, options);
-      successCount += 1;
-      let detail = result.fileName;
-      const warnings = localizedWarnings(result);
-      if (warnings.length) detail += ` — ${warnings.join("；")}`;
-      setBatchResult(index, { status: "success", detail, result });
-    } catch (error) {
-      failCount += 1;
-      rendererLog("warn", `转换失败: "${file.name || "未知文件"}" -> ${targetFormat}: ${error.message || error}`);
-      setBatchResult(index, { status: "error", detail: error.message || (i18n.language === "en-US" ? "Unknown error" : "未知错误") });
-      maybeShowQqTutorial(error);
+    if (isMergedPdfConversion(targetFormat)) {
+      await convertMergedPdfs(files);
+      return;
     }
+
+    if (isSplitPdfConversion(targetFormat)) {
+      setStatus(() => i18n.language === "en-US" ? "Splitting the PDF into individual pages..." : "正在把 PDF 拆分为单页文件...");
+    }
+
+    let successCount = 0;
+    let failCount = 0;
+    for (let index = 0; index < files.length; index += 1) {
+      const file = files[index];
+      setBatchResult(index, { status: "converting", detail: i18n.language === "en-US" ? `Converting to ${targetFormat.toUpperCase()}` : `正在转换为 ${targetFormat.toUpperCase()}` });
+      setStageProgress("preparing");
+
+      const fileStartedAt = performance.now();
+      try {
+        const result = await convertOneFile(file, targetFormat, options);
+        successCount += 1;
+        let detail = result.fileName;
+        const warnings = localizedWarnings(result);
+        if (warnings.length) detail += ` — ${warnings.join("；")}`;
+        setBatchResult(index, { status: "success", detail, result, elapsedMs: performance.now() - fileStartedAt });
+      } catch (error) {
+        failCount += 1;
+        rendererLog("warn", `转换失败: "${file.name || "未知文件"}" -> ${targetFormat}: ${error.message || error}`);
+        setBatchResult(index, { status: "error", detail: error.message || (i18n.language === "en-US" ? "Unknown error" : "未知错误"), elapsedMs: performance.now() - fileStartedAt });
+      }
+    }
+
+    const completed = successCount + failCount;
+    const type = failCount ? "error" : "success";
+    setProgress(files.length === 1 && failCount ? null : 100, () => i18n.language === "en-US"
+      ? (failCount ? `Processed ${completed}/${files.length}; ${failCount} failed` : "Conversion complete")
+      : (failCount ? `已处理 ${completed}/${files.length}，失败 ${failCount} 个` : "转换完成"), type);
+
+    state.batchResults = [...state.batchResults];
+    const successful = state.batchResults.filter((item) => item.status === "success" && item.result);
+    state.converted = successful.length === 1 ? successful[0].result : null;
+
+    if (successful.length === 1) {
+      downloadButton.href = successful[0].result.downloadUrl;
+      downloadButton.download = successful[0].result.fileName;
+      downloadButton.textContent = `${t("action.save")} ${successful[0].result.fileName}`;
+      downloadButton.hidden = false;
+      previewButton.hidden = false;
+    }
+
+    batchSaveButton.hidden = successful.length < 2;
+    setMouseState(failCount ? "error" : "success");
+    if (successful.length) {
+      setWorkflowStep("save");
+    }
+    setStatus(() => i18n.language === "en-US"
+      ? (failCount ? `Batch complete: ${successCount} succeeded, ${failCount} failed. Details appear beside each file. ${t("feedback.hint")}` : `Batch complete: ${successCount} succeeded.`)
+      : (failCount ? `批量转换完成：成功 ${successCount} 个，失败 ${failCount} 个。失败原因已显示在对应文件旁边。${t("feedback.hint")}` : `批量转换完成：成功 ${successCount} 个。`),
+    failCount ? (successCount ? "" : "error") : "success");
+  } finally {
+    try { finishConversionProgress(); } finally { setConversionBusy(false); }
   }
-
-  const completed = successCount + failCount;
-  const type = failCount ? (successCount ? "" : "error") : "success";
-  setProgress(100, i18n.language === "en-US"
-    ? (failCount ? `Completed ${completed}/${files.length}; ${failCount} failed` : "Conversion complete")
-    : (failCount ? `完成 ${completed}/${files.length}，失败 ${failCount} 个` : "转换完成"), type);
-
-  state.batchResults = [...state.batchResults];
-  const successful = state.batchResults.filter((item) => item.status === "success" && item.result);
-  state.converted = successful.length === 1 ? successful[0].result : null;
-
-  if (successful.length === 1) {
-    downloadButton.href = successful[0].result.downloadUrl;
-    downloadButton.download = successful[0].result.fileName;
-    downloadButton.textContent = `${t("action.save")} ${successful[0].result.fileName}`;
-    downloadButton.hidden = false;
-    previewButton.hidden = false;
-  }
-
-  batchSaveButton.hidden = successful.length < 2;
-  setMouseState(failCount ? "error" : "success");
-  if (successful.length) {
-    setWorkflowStep("save");
-  }
-  setStatus(i18n.language === "en-US"
-    ? (failCount ? `Batch complete: ${successCount} succeeded, ${failCount} failed. Details appear beside each file. ${t("feedback.hint")}` : `Batch complete: ${successCount} succeeded.`)
-    : (failCount ? `批量转换完成：成功 ${successCount} 个，失败 ${failCount} 个。失败原因已显示在对应文件旁边。${t("feedback.hint")}` : `批量转换完成：成功 ${successCount} 个。`),
-  failCount ? (successCount ? "" : "error") : "success");
-
-  setConversionBusy(false);
 }
 
 async function saveResult(result) {
   if (!result) return;
 
   if (window.flyingMouseFormat?.saveConvertedFile) {
-    setStatus(i18n.language === "en-US" ? `Choose where to save ${result.fileName}...` : `请选择 ${result.fileName} 的保存位置...`);
-    const saved = await window.flyingMouseFormat.saveConvertedFile({
-      downloadUrl: result.downloadUrl,
-      fileName: result.fileName,
-      assets: Array.isArray(result.assets) ? result.assets : undefined
-    });
-    if (saved?.canceled) {
-      setStatus(i18n.language === "en-US" ? `Converted: ${result.fileName}. Not saved yet.` : `转换完成：${result.fileName}。尚未保存。`, "success");
-      return;
-    }
-    setStatus(i18n.language === "en-US" ? `Saved to: ${saved.filePath}` : `已保存到：${saved.filePath}`, "success");
+    const release = retainResults([result]);
+    try {
+      setStatus(() => i18n.language === "en-US" ? `Choose where to save ${result.fileName}...` : `请选择 ${result.fileName} 的保存位置...`);
+      const saved = await window.flyingMouseFormat.saveConvertedFile({
+        downloadUrl: result.downloadUrl,
+        fileName: result.fileName,
+        assets: Array.isArray(result.assets) ? result.assets : undefined
+      });
+      if (saved?.canceled) {
+        setStatus(() => i18n.language === "en-US" ? `Converted: ${result.fileName}. Not saved yet.` : `转换完成：${result.fileName}。尚未保存。`, "success");
+        return;
+      }
+      setStatus(() => i18n.language === "en-US" ? `Saved to: ${saved.filePath}` : `已保存到：${saved.filePath}`, "success");
+    } finally { release(); }
     return;
   }
 
+  // A browser download provides no reliable completion callback to the page.
+  // Keep its source for this session; native saves release their use above.
+  retainResults([result]);
   const link = document.createElement("a");
   link.href = result.downloadUrl;
   link.download = result.fileName;
@@ -1189,7 +1364,7 @@ function previewFallback(result, message) {
   previewContent.replaceChildren(wrapper);
 }
 
-async function renderPreview(result) {
+async function renderPreview(result, request) {
   previewTitle.textContent = result.fileName || t("preview.title");
   previewMeta.textContent = `${result.mimeType || "application/octet-stream"} · ${formatSize(result.previewSize || 0)}`;
   previewContent.replaceChildren(createTextElement("p", "preview-loading", t("preview.loading")));
@@ -1228,11 +1403,14 @@ async function renderPreview(result) {
       previewFallback(result, t("preview.tooLarge"));
       return;
     }
-    const response = await fetch(result.previewUrl);
+    const response = await fetch(result.previewUrl, { signal: request.controller.signal });
+    if (state.previewRequest !== request) return;
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const text = await response.text();
+    if (state.previewRequest !== request) return;
     const pre = document.createElement("pre");
     pre.className = "preview-text";
-    pre.textContent = await response.text();
+    pre.textContent = text;
     previewContent.replaceChildren(pre);
     return;
   }
@@ -1241,25 +1419,39 @@ async function renderPreview(result) {
 
 async function openPreview(result, opener) {
   if (!result) return;
+  state.previewRequest?.controller.abort();
+  const request = { controller: new AbortController() };
+  state.previewRequest = request;
   state.previewResult = result;
   state.previewOpener = opener || document.activeElement;
   previewDrawer.hidden = false;
   previewBackdrop.hidden = false;
+  if (!state.previewInert) {
+    state.previewInert = [...document.body.children]
+      .filter(element => element !== previewDrawer && element !== previewBackdrop && element.tagName !== "SCRIPT")
+      .map(element => ({ element, inert: element.inert }));
+    for (const { element } of state.previewInert) element.inert = true;
+  }
   document.body.classList.add("preview-open");
   previewClose.focus();
   try {
-    await renderPreview(result);
+    await renderPreview(result, request);
   } catch (error) {
+    if (state.previewRequest !== request || request.controller.signal.aborted) return;
     previewFallback(result, t("preview.failed", { message: error.message || "unknown" }));
   }
 }
 
 function closePreview() {
+  state.previewRequest?.controller.abort();
+  state.previewRequest = null;
   if (!previewDrawer || previewDrawer.hidden) return;
   previewDrawer.hidden = true;
   previewBackdrop.hidden = true;
   previewContent.replaceChildren();
   document.body.classList.remove("preview-open");
+  for (const { element, inert } of state.previewInert || []) element.inert = inert;
+  state.previewInert = null;
   const opener = state.previewOpener;
   state.previewResult = null;
   state.previewOpener = null;
@@ -1273,7 +1465,7 @@ async function saveConvertedFile(event) {
   try {
     await saveResult(state.converted);
   } catch (error) {
-    setStatus(i18n.language === "en-US" ? `Save failed: ${error.message || "Unknown error"}` : `保存失败：${error.message || "未知错误"}`, "error");
+    setStatus(() => i18n.language === "en-US" ? `Save failed: ${error.message || "Unknown error"}` : `保存失败：${error.message || "未知错误"}`, "error");
   }
 }
 
@@ -1283,34 +1475,39 @@ async function saveAllConvertedFiles() {
     .map((item) => item.result);
   if (!results.length) return;
 
+  const release = retainResults(results);
+  let browserDownloadStarted = false;
   try {
     if (window.flyingMouseFormat?.saveConvertedFiles) {
-      setStatus(i18n.language === "en-US" ? `Choose a folder for ${results.length} files...` : `请选择 ${results.length} 个文件的保存文件夹...`);
+      setStatus(() => i18n.language === "en-US" ? `Choose a folder for ${results.length} files...` : `请选择 ${results.length} 个文件的保存文件夹...`);
       const saved = await window.flyingMouseFormat.saveConvertedFiles({ files: results });
       if (saved?.canceled) {
-        setStatus(i18n.language === "en-US" ? `${results.length} files converted. Not saved yet.` : `已转换 ${results.length} 个文件，尚未保存。`, "success");
+        setStatus(() => i18n.language === "en-US" ? `${results.length} files converted. Not saved yet.` : `已转换 ${results.length} 个文件，尚未保存。`, "success");
         return;
       }
       const failList = Array.isArray(saved?.failed) ? saved.failed : [];
       if (failList.length) {
         const names = failList.map((f) => f.name).join("、");
-        setStatus(i18n.language === "en-US"
+        setStatus(() => i18n.language === "en-US"
           ? `Saved ${saved.savedCount}; ${failList.length} failed (${names}). ${failList[0].reason}`
           : `已保存 ${saved.savedCount} 个，失败 ${failList.length} 个（${names}）。${failList[0].reason}`, "error");
       } else {
-        setStatus(i18n.language === "en-US" ? `Saved ${saved.savedCount} files to: ${saved.directory}` : `已保存 ${saved.savedCount} 个文件到：${saved.directory}`, "success");
+        setStatus(() => i18n.language === "en-US" ? `Saved ${saved.savedCount} files to: ${saved.directory}` : `已保存 ${saved.savedCount} 个文件到：${saved.directory}`, "success");
       }
       return;
     }
 
     for (const result of results) {
+      browserDownloadStarted = true;
       const link = document.createElement("a");
       link.href = result.downloadUrl;
       link.download = result.fileName;
       link.click();
     }
   } catch (error) {
-    setStatus(i18n.language === "en-US" ? `Save all failed: ${error.message || "Unknown error"}` : `保存全部失败：${error.message || "未知错误"}`, "error");
+    setStatus(() => i18n.language === "en-US" ? `Save all failed: ${error.message || "Unknown error"}` : `保存全部失败：${error.message || "未知错误"}`, "error");
+  } finally {
+    if (!browserDownloadStarted) release();
   }
 }
 
@@ -1423,6 +1620,46 @@ batchList.addEventListener("click", async (event) => {
 });
 
 // 在队列 index 之后插入一页空白页（仅图片合并 PDF 时可用）
+function refreshImagePdfQueue() {
+  const previousTarget = targetSelect.value;
+  const targets = commonTargetsFrom(state.fileInfos);
+  targetSelect.replaceChildren();
+  for (const target of targets) {
+    const option = document.createElement("option");
+    option.value = target;
+    option.textContent = targetFormatLabel(target);
+    targetSelect.append(option);
+  }
+  if (targets.includes(previousTarget)) targetSelect.value = previousTarget;
+  const summary = summarizeFiles(state.files);
+  fileName.textContent = summary.name;
+  fileMeta.textContent = summary.meta;
+  targetSelect.disabled = !targets.length;
+  convertButton.disabled = !targets.length;
+  syncImagePdfModeField();
+  syncVideoCodecField();
+  syncPdfActionFields();
+  syncPdfExcelHint();
+  const blankCount = state.files.filter(file => file?.isBlankPage).length;
+  const imageCount = state.files.length - blankCount;
+  if (blankCount) {
+    fileName.textContent = i18n.language === "en-US"
+      ? `${imageCount} images · ${blankCount} blank pages (${state.files.length} pages total)`
+      : `${imageCount} 张图片 · ${blankCount} 个空白页（共 ${state.files.length} 页）`;
+    fileMeta.textContent = i18n.language === "en-US"
+      ? `${formatSize(state.files.reduce((sum, file) => sum + file.size, 0))} · Merge in queue order`
+      : `${formatSize(state.files.reduce((sum, file) => sum + file.size, 0))} · 按队列顺序合并`;
+    setStatus(() => i18n.language === "en-US"
+      ? `${imageCount} images and ${blankCount} blank pages will merge into a ${state.files.length}-page PDF.`
+      : `${imageCount} 张图片和 ${blankCount} 个空白页，将合并为 ${state.files.length} 页 PDF。`);
+  } else {
+    setStatus(() => i18n.language === "en-US"
+      ? `Selected ${imageCount} images. Available targets: ${targets.map(target => target.toUpperCase()).join(", ")}.`
+      : `已选择 ${imageCount} 张图片，可转换为：${targets.map(target => target.toUpperCase()).join("、")}。`);
+  }
+  renderBatchList();
+}
+
 function insertBlankPage(index) {
   if (!canReorderImages()) return;
   const blankPage = { isBlankPage: true, name: "空白页", size: 0 };
@@ -1430,7 +1667,7 @@ function insertBlankPage(index) {
   state.files.splice(at, 0, blankPage);
   state.fileInfos.splice(at, 0, { extension: "", category: "image", targets: ["pdf"], experimental: false });
   state.batchResults.splice(at, 0, { status: "pending", detail: "等待转换" });
-  renderBatchList();
+  refreshImagePdfQueue();
 }
 
 function removeBlankPage(index) {
@@ -1439,7 +1676,7 @@ function removeBlankPage(index) {
   state.files.splice(index, 1);
   state.fileInfos.splice(index, 1);
   state.batchResults.splice(index, 1);
-  renderBatchList();
+  refreshImagePdfQueue();
 }
 
 clearButton.addEventListener("click", clearFile);
@@ -1456,7 +1693,7 @@ async function persistSettings(patch) {
     rendererLog("warn", "设置持久化失败，本次继续使用内存偏好", error);
     if (!settingsDegraded) {
       settingsDegraded = true;
-      setStatus(t("settings.degraded"), "warn");
+      setStatus(() => t("settings.degraded"), "warn");
     }
   }
 }
@@ -1491,39 +1728,56 @@ downloadButton.addEventListener("click", saveConvertedFile);
 batchSaveButton.addEventListener("click", saveAllConvertedFiles);
 if (pdfAction) pdfAction.addEventListener("change", syncPdfActionFields);
 if (pdfSplitMode) pdfSplitMode.addEventListener("change", syncPdfActionFields);
+if (imagePdfMode) imagePdfMode.addEventListener("change", () => {
+  syncImagePdfModeField();
+  renderBatchList();
+});
 previewButton.addEventListener("click", () => openPreview(state.converted, previewButton));
 previewClose.addEventListener("click", closePreview);
 previewBackdrop.addEventListener("click", closePreview);
 document.addEventListener("keydown", (event) => {
+  if (!previewDrawer.hidden && event.key === "Tab") {
+    const controls = [...previewDrawer.querySelectorAll('button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), audio[controls], video[controls], iframe, [tabindex]:not([tabindex="-1"])')]
+      .filter(element => !element.hidden && element.getClientRects().length);
+    const first = controls[0] || previewClose;
+    const last = controls[controls.length - 1] || previewClose;
+    if (!previewDrawer.contains(document.activeElement) || (event.shiftKey ? document.activeElement === first : document.activeElement === last)) {
+      event.preventDefault();
+      (event.shiftKey ? last : first).focus();
+    }
+  }
   if (event.key === "Escape" && !previewDrawer.hidden) closePreview();
+});
+document.addEventListener("focusin", (event) => {
+  if (!previewDrawer.hidden && !previewDrawer.contains(event.target)) previewClose.focus();
 });
 agentInstallButton.addEventListener("click", async () => {
   if (typeof logBridge.inspectAgentSkillTargets !== "function" || typeof logBridge.installAgentSkill !== "function") return;
   agentInstallButton.disabled = true;
-  setStatus(t("agent.checking"));
+  setStatus(() => t("agent.checking"));
   try {
     const inspected = await logBridge.inspectAgentSkillTargets();
     if (!inspected?.targets?.length) {
-      setStatus(t("agent.none"));
+      setStatus(() => t("agent.none"));
       return;
     }
     const result = await logBridge.installAgentSkill({ targetIds: inspected.targets.map((item) => item.id) });
     if (result?.canceled) {
-      setStatus(t("agent.canceled"));
+      setStatus(() => t("agent.canceled"));
     } else if (result.failed?.length) {
-      setStatus(t("agent.partial", {
+      setStatus(() => t("agent.partial", {
         count: result.installed.length,
         failed: result.failed.length,
         message: result.failed.map((item) => item.error).join("；")
       }), result.installed.length ? "success" : "error");
     } else {
-      setStatus(t("agent.installed", {
+      setStatus(() => t("agent.installed", {
         count: result.installed.length,
         paths: result.installed.map((item) => item.path).join("；")
       }), "success");
     }
   } catch (error) {
-    setStatus(t("agent.failed", { message: error.message || "unknown" }), "error");
+    setStatus(() => t("agent.failed", { message: error.message || "unknown" }), "error");
   } finally {
     agentInstallButton.disabled = false;
   }
@@ -1537,7 +1791,7 @@ diagnosticsButton.addEventListener("click", async () => {
       ? t("diagnostics.canceled")
       : t("diagnostics.saved", { path: result.filePath }), result?.canceled ? "" : "success");
   } catch (error) {
-    setStatus(t("diagnostics.failed", { message: error.message || "unknown" }), "error");
+    setStatus(() => t("diagnostics.failed", { message: error.message || "unknown" }), "error");
     rendererLog("error", "导出诊断失败", error);
   } finally {
     diagnosticsButton.disabled = false;
@@ -1607,7 +1861,7 @@ async function initializeApp() {
   await fetchCapabilities();
   initializeVersionLabel();
   if (settingsDegraded) {
-    setStatus(t("settings.degraded"), "warn");
+    setStatus(() => t("settings.degraded"), "warn");
   }
 }
 

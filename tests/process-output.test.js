@@ -27,3 +27,35 @@ test("pure JS document routes remain usable without LibreOffice and JPEG aliases
   assert.equal(normalizeExt("jfif"), "jpg");
   assert.equal(normalizeExt("jpe"), "jpg");
 });
+
+test("process observers receive real stream chunks before completion without changing output", async () => {
+  let completed = false;
+  const observed = { stdout: [], stderr: [] };
+  const result = await run(process.execPath, ["-e", "process.stdout.write('first');process.stderr.write('status');setTimeout(()=>process.stdout.write('last'),100)"], {
+    onStdout: chunk => { assert.equal(completed, false); observed.stdout.push(chunk.toString()); },
+    onStderr: chunk => { assert.equal(completed, false); observed.stderr.push(chunk.toString()); }
+  }).then(value => { completed = true; return value; });
+  assert.equal(observed.stdout.join(""), "firstlast");
+  assert.equal(observed.stderr.join(""), "status");
+  assert.equal(result.stdout, "firstlast");
+  assert.equal(result.stderr, "status");
+});
+
+test("a throwing progress observer does not fail a successful native conversion", async () => {
+  let calls = 0;
+  const result = await run(process.execPath, ["-e", "process.stdout.write('result')"], {
+    onStdout: () => { calls++; throw new Error("observer only"); }
+  });
+  assert.equal(calls, 1);
+  assert.equal(result.stdout, "result");
+});
+
+test("observer buffer mutation and rejected promises cannot corrupt output or become unhandled", async () => {
+  let calls = 0;
+  const result = await run(process.execPath, ["-e", "process.stdout.write('original')"], {
+    onStdout: async chunk => { calls++; chunk.fill(0); throw new Error("async observer only"); }
+  });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(calls, 1);
+  assert.equal(result.stdout, "original");
+});

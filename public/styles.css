@@ -354,6 +354,7 @@ h1 {
 
 .batch-list {
   display: grid;
+  grid-auto-rows: max-content;
   gap: 8px;
   max-height: 300px;
   overflow: auto;
@@ -413,10 +414,13 @@ h1 {
 }
 
 .batch-actions {
-  display: grid;
-  justify-items: end;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
   gap: 6px;
-  min-width: 72px;
+  min-width: 0;
+  max-width: 260px;
 }
 
 .batch-status {
@@ -474,6 +478,20 @@ h1 {
   background: var(--yellow-soft);
   font-size: 12px;
   line-height: 1.55;
+}
+
+#textEncodingField,
+#textEncoding {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.field-help {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
 }
 
 select {
@@ -587,23 +605,28 @@ input:focus-visible {
   background: var(--error);
 }
 
-/* 不确定进度（单文件长任务：视频/PDF/Office 转码无实时进度，用滑动动画消除「卡死」错觉） */
-.progress-panel.indeterminate .progress-fill {
-  width: 40%;
-  transition: none;
-  animation: progress-indeterminate 1.4s ease-in-out infinite;
+.progress-details,
+.progress-summary {
+  font-size: 12px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
 }
 
-@keyframes progress-indeterminate {
-  0% { transform: translateX(-100%); }
-  100% { transform: translateX(250%); }
+.progress-summary {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 6px 14px;
+}
+
+#progressPercent,
+#progressElapsed {
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .progress-panel.indeterminate .progress-fill {
-    width: 100%;
-    animation: none;
-  }
+  .progress-fill { transition: none; }
 }
 
 .status-box {
@@ -1179,7 +1202,8 @@ input:focus-visible {
   }
 
   .batch-actions {
-    justify-items: stretch;
+    justify-content: flex-start;
+    max-width: none;
   }
 
   .batch-status {

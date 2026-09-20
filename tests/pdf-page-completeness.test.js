@@ -88,14 +88,15 @@ for (const engine of ['qpdf', 'pdf-lib']) test(`${engine} split keeps ZIP writin
   t.mock.method(fileStreams, 'createWriteStream', (file, ...args) => {
     const stream = createWriteStream(file, ...args);
     if (path.resolve(String(file)) === output) {
-      const write = stream._write;
       let held = false;
-      stream._write = function(chunk, encoding, callback) {
-        if (held) return write.call(this, chunk, encoding, callback);
-        held = true;
-        enter();
-        barrier.then(() => write.call(this, chunk, encoding, callback));
-      };
+      for (const method of ['_write', '_writev']) {
+        const write = stream[method];
+        stream[method] = function(...args) {
+          if (held) return write.apply(this, args);
+          held = true; enter();
+          barrier.then(() => write.apply(this, args));
+        };
+      }
     }
     return stream;
   });
@@ -243,13 +244,15 @@ async function observeOutputWrite(t, output, convert) {
   t.mock.method(streams, 'createWriteStream', (file, ...args) => {
     const stream = createWriteStream(file, ...args);
     if (path.resolve(String(file)) === output) {
-      const write = stream._write;
       let held = false;
-      stream._write = function(chunk, encoding, callback) {
-        if (held) return write.call(this, chunk, encoding, callback);
-        held = true; enter();
-        barrier.then(() => write.call(this, chunk, encoding, callback));
-      };
+      for (const method of ['_write', '_writev']) {
+        const write = stream[method];
+        stream[method] = function(...args) {
+          if (held) return write.apply(this, args);
+          held = true; enter();
+          barrier.then(() => write.apply(this, args));
+        };
+      }
     }
     return stream;
   });

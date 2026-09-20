@@ -285,7 +285,7 @@ test("explicit GBK and BOM-marked UTF-16 produce actual EPUBs with the original 
   }
 });
 
-for (const failWrite of [false, true]) test(`PDF WEBP output clears completed page counts while ZIP is writing; failure=${failWrite}`, async t => {
+for (const buffered of [false, true]) for (const failWrite of [false, true]) test(`PDF WEBP output clears completed page counts while ZIP is writing; failure=${failWrite}; buffered=${buffered}`, async t => {
   const sharp = require("sharp"), colors = [{ r: 255, g: 0, b: 0 }, { r: 0, g: 0, b: 255 }];
   renderedPageFixtures = await Promise.all(colors.map(background => sharp({ create: { width: 2, height: 2, channels: 3, background } }).png().toBuffer()));
   t.after(() => { renderedPageFixtures = null; });
@@ -293,7 +293,7 @@ for (const failWrite of [false, true]) test(`PDF WEBP output clears completed pa
   const input = await pdf.save(), id = randomUUID(), form = new FormData();
   form.append("file", new Blob([input]), "两页.pdf"); form.append("targetFormat", "webp");
   const create = fs.createWriteStream;
-  let entered, release, ownOutput;
+  let entered, release, ownOutput, sawBufferedWrite = false;
   const started = new Promise(resolve => { entered = resolve; });
   const barrier = new Promise(resolve => { release = resolve; });
   t.after(release);
@@ -301,12 +301,26 @@ for (const failWrite of [false, true]) test(`PDF WEBP output clears completed pa
     const stream = create(file, ...args);
     if (path.resolve(String(file)).startsWith(path.resolve(config.OUTPUT_DIR) + path.sep)) {
       ownOutput = String(file);
-      const write = stream._write; let held = false;
-      stream._write = function(chunk, encoding, callback) {
-        if (held) return write.call(this, chunk, encoding, callback);
-        held = true; entered();
-        barrier.then(() => failWrite ? callback(Object.assign(new Error("ZIP write failed"), { code: "ENOSPC" })) : write.call(this, chunk, encoding, callback));
-      };
+      if (buffered) {
+        // Delay only the real stream's construction callback so ZIP headers
+        // queue and flush through the platform's actual vector-write path.
+        const construct = stream._construct;
+        stream._construct = function(callback) {
+          construct.call(this, error => setTimeout(() => callback(error), 100));
+        };
+      }
+      let held = false;
+      for (const method of ['_write', '_writev']) {
+        const write = stream[method];
+        stream[method] = function(...args) {
+          if (method === '_writev') sawBufferedWrite = true;
+          if (held) return write.apply(this, args);
+          held = true; entered();
+          barrier.then(() => failWrite
+            ? args.at(-1)(Object.assign(new Error("ZIP write failed"), { code: "ENOSPC" }))
+            : write.apply(this, args));
+        };
+      }
     }
     return stream;
   });
@@ -318,6 +332,7 @@ for (const failWrite of [false, true]) test(`PDF WEBP output clears completed pa
     during = await progress(id);
   } finally { clearTimeout(timer); release(); }
   const response = await request, result = await response.json();
+  if (buffered) assert.ok(sawBufferedWrite, 'forced buffering must exercise the real _writev path');
   t.diagnostic(`Observed during real ZIP write: ${JSON.stringify(during)}`);
   assert.equal(during.status, "running");
   assert.equal(during.stage, "converting");

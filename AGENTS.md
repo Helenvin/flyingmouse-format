@@ -1,6 +1,8 @@
-# 当前候选：0.7.10 整体审查修复
+# 当前公开版：0.7.10 Windows 10/11 x64
 
-本分支保留 0.7.9 稳定性修复，并继续处理整体审查发现的内容丢失、数值误改、资源与 UI 生命周期问题。当前验收边界见 [REPAIR-0.7.10.md](docs/REPAIR-0.7.10.md)；旧修复说明保留历史状态。0.7.7 CAD 工作未纳入；本地音乐专用模块不在公开分支。源码同步不代表安装器发布或 Microsoft Store 认证。
+0.7.10 公开交付 Windows 完整版，保留 0.7.9 稳定性修复并修复内容丢失、TXT→EPUB 资源暴涨、进度和 UI 生命周期问题。[发布说明](docs/release-notes-0710.md)与 [REPAIR-0.7.10.md](docs/REPAIR-0.7.10.md)区分当前发布与历史候选状态。Lite、macOS、Win7 的 0.7.10 安装器未发布，Microsoft Store 0.7.10 更新也尚未发布；不能从仓库/CI 状态推断商店认证或客户端升级。CAD 工作未纳入，本地音乐专用模块不在公开分支。
+
+本次安装器仍来自生产构建 `5d90f84`；`830c4d8` 仅补强两个未打包测试，`92f26a5` 合并树与之相同，后续发布文档不改变二进制。不要因测试或文档提交更新而改写既有构建来源。Windows 11 已完成列明的成品验收，Windows 10、其他硬件及商店签名版升级需独立验证。
 
 Windows 构建使用 package.json 的构建配置，需先准备锁定引擎与 MSVC。完整重建 EXE/ASAR 后由 afterSign 附加原生入口。不得关闭 GPU 或渲染器沙箱、全局重置 ACL 或按 Unknown Account 名称批量删除权限。
 
@@ -10,7 +12,7 @@ Windows 构建使用 package.json 的构建配置，需先准备锁定引擎与 
 
 FlyingMouse Format（飞鼠格式）是 Windows Electron 离线文件转换器。主产品必须使用原版鼠鼠 UI；它与“鼠鼠打印”是两个独立项目，禁止跨项目修改或混合发布物。
 
-当前技术栈：Electron 43、Windows 10/11 x64、鼠鼠 UI、中英文切换、批量转换、偏好与保存目录记忆。PDF 按原生/扫描内容分流，见 [架构](docs/ARCHITECTURE.md)；OFD 仅通过 `ofd-convert.js` 转 PDF，不走 LibreOffice。Windows 7 SP1 x64 只通过独立 staging 派生 Electron 22.3.27，禁止降低根 manifest 的主线依赖。当前候选与发布状态以 [0.7.10 修复说明](docs/REPAIR-0.7.10.md) 为准，不能从源码版本推断已安装或已发布版本。
+当前技术栈：Electron 43、Windows 10/11 x64、鼠鼠 UI、中英文切换、批量转换、偏好与保存目录记忆。PDF 按原生/扫描内容分流，见 [架构](docs/ARCHITECTURE.md)；OFD 仅通过 `ofd-convert.js` 转 PDF，不走 LibreOffice。Windows 7 SP1 x64 只通过独立 staging 派生 Electron 22.3.27，禁止降低根 manifest 的主线依赖。分渠道发布状态以 [0.7.10 修复说明](docs/REPAIR-0.7.10.md) 为准，不能从源码版本推断已安装版本。
 
 ## Source map
 

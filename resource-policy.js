@@ -37,6 +37,10 @@ const STRUCTURE_LIMITS = Object.freeze({
 });
 
 const MESSAGES = Object.freeze({
+  TEXT_INPUT_BUDGET_EXCEEDED: {
+    zhCN: "文本转 EPUB 超过当前内存预算（输入最多 {limitMiB} MiB），请拆分文本后重试；原文件未修改。",
+    enUS: "Text-to-EPUB exceeds the current memory budget (up to {limitMiB} MiB of input). Split the text and retry; the original is unchanged."
+  },
   IMAGE_METADATA_INVALID: {
     zhCN: "无法读取图片尺寸，请确认图片文件完整。",
     enUS: "The image dimensions could not be read. Make sure the image is valid."

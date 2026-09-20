@@ -15,6 +15,7 @@ const VALUE_OPTIONS = new Map([
   ["--output-dir", "outputDir"],
   ["--video-codec", "videoCodec"],
   ["--pdf-action", "pdfAction"],
+  ["--text-encoding", "textEncoding"],
   ["--password", "password"]
 ]);
 
@@ -33,6 +34,7 @@ Options:
   --video-codec <h264|h265|av1>
   --pdf-action <encrypt|decrypt>
   --password <password>       PDF password (never printed in JSON output)
+  --text-encoding <encoding>  EPUB source: auto, utf-8, gb18030, utf-16le, utf-16be
   --json                      Stable machine-readable output
   -h, --help                  Show this help
 
@@ -306,6 +308,7 @@ async function executeCli(parsed, runtime) {
         results.push(await postMultipart(`${baseUrl}/api/convert`, {
           targetFormat: parsed.options.to,
           videoCodec: parsed.options.videoCodec,
+          textEncoding: parsed.options.textEncoding,
           pdfAction: parsed.options.pdfAction,
           password: parsed.options.password
         }, [file], "file"));

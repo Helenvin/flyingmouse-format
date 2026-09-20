@@ -30,7 +30,7 @@ function harness() {
     categoryLabel: value => value, isLongTaskTarget: () => false, mouseStateForConversion: () => "converting",
     setMouseState() {}, setWorkflowStep() {}, resetProgress() {}, setProgress() {}, setStageProgress() {}, updateProgressDetail() {},
     renderQqMusicConnection() {}, beginConversionProgress() {}, finishConversionProgress() {}, renderBatchList() {}, closePreview() {}, saveConvertedFile() {}, saveAllConvertedFiles() {},
-    syncVideoCodecField() {}, syncPdfExcelHint() {}, persistSettings: async () => {}, rememberTarget: () => ({}),
+    syncVideoCodecField() {}, syncTextEncodingField() {}, usesTextEncoding:()=>false, syncPdfExcelHint() {}, persistSettings: async () => {}, rememberTarget: () => ({}),
     setStatus(message, type) { statuses.push({ message: typeof message === "function" ? message() : message, type }); }, formatSize: String,
     extensionOf: name => name.split(".").at(-1), preferredTarget: () => null,
     setSelectPlaceholder(select, value) { select.replaceChildren(); select.value = value; },
@@ -45,7 +45,7 @@ function harness() {
   });
   for (const name of ["fileInput", "folderInput", "dropZone", "chooseFolderButton", "clearButton", "fileName", "fileMeta", "fileStrip",
     "batchList", "targetSelect", "convertButton", "downloadButton", "batchSaveButton", "previewButton", "videoCodec", "alphaBackground",
-    "pdfPassword", "pdfAction", "pdfSplitMode", "pdfGroupSize", "imagePdfMode", "cancelConversionButton", "progressLabel",
+    "pdfPassword", "pdfAction", "pdfSplitMode", "pdfGroupSize", "imagePdfMode", "textEncoding", "textEncodingField", "cancelConversionButton", "progressLabel",
     "pdfPasswordField", "pdfActionField", "pdfSplitModeField", "pdfGroupSizeField", "imagePdfModeField",
     "previewTitle", "previewMeta", "previewContent", "previewDrawer", "previewBackdrop", "previewClose"]) context[name] = element();
   context.pdfAction.options = ["merge", "", "encrypt", "decrypt"].map(value => Object.assign(element("option"), { value }));

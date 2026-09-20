@@ -25,7 +25,7 @@ test("CLI parses conversion, merge, JSON, and engine options", () => {
   const parsed = parseCliArgs([
     "convert", "一.txt", "二.txt", "--to", "md", "--output-dir", "out",
     "--video-codec", "h265", "--pdf-action", "decrypt",
-    "--password", "secret", "--json"
+    "--password", "secret", "--text-encoding", "gb18030", "--json"
   ]);
   assert.equal(parsed.command, "convert");
   assert.deepEqual(parsed.files, ["一.txt", "二.txt"]);
@@ -34,6 +34,7 @@ test("CLI parses conversion, merge, JSON, and engine options", () => {
   assert.equal(parsed.options.videoCodec, "h265");
   assert.equal(parsed.options.pdfAction, "decrypt");
   assert.equal(parsed.options.password, "secret");
+  assert.equal(parsed.options.textEncoding, "gb18030");
   assert.equal(parsed.options.json, true);
 });
 

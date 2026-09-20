@@ -354,8 +354,9 @@ function parseCsvRecords(csv) {
 
 // TSV -> 逗号分隔 CSV 文本（tab 解析后重新引号转义）。TSV 与 CSV 同源，
 // 统一归一化后走同一套自有实现；避免 LO 的假成功路径。
-async function readTabularText(inputPath, inputExt) {
-  const raw = await fsp.readFile(inputPath, "utf8");
+async function readTabularText(inputPath, inputExt, textOptions) {
+  const raw = textOptions ? await require("./text-encoding").readTextInput(inputPath, textOptions)
+    : await fsp.readFile(inputPath, "utf8");
   if (normalizeExt(inputExt) !== "tsv") return raw;
   const { parse } = require("csv-parse/sync");
   let records;

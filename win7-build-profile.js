@@ -24,6 +24,7 @@ const REQUIRED_RUNTIME_FILES = [
   "pdf-structure-score.js",
   "pdf-structure-engine.js",
   "text-conversion.js",
+  "text-encoding.js",
   "office-engine.js",
   "office-quality.js",
   "diagnostics.js",

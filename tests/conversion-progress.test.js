@@ -57,6 +57,26 @@ test("ALS isolates concurrent conversions and explicitly captured late reporters
   assert.equal(reportFirst({ stage: "converting" }), false);
 });
 
+test("EPUB chapter measurements remain running until the complete archive is validated", t => {
+  const { registry } = fixture(t), id = randomUUID(), scope = registry.create(id);
+  assert.equal(scope.report({ stage: "converting", completed: 3, total: 4, unit: "chapters" }), true);
+  assert.equal(registry.get(id).unit, "chapters");
+  assert.equal(registry.get(id).completed, 3);
+  const before = registry.get(id);
+  for (const completed of [3.5, 5, -1]) {
+    assert.equal(scope.report({ stage: "converting", completed, total: 4, unit: "chapters" }), false);
+    assert.deepEqual(registry.get(id), before);
+  }
+  assert.equal(scope.report({ stage: "converting", completed: 4, total: 4, unit: "chapters" }), true);
+  assert.equal(registry.get(id).status, "running", "chapter completion is not archive or request completion");
+  assert.equal(scope.report({ stage: "validating" }), true);
+  assert.equal(registry.get(id).completed, null);
+  assert.equal(registry.get(id).unit, null);
+  scope.finish(false);
+  assert.equal(scope.report({ stage: "converting", completed: 4, total: 4, unit: "chapters" }), false);
+  assert.equal(registry.get(id).status, "failed");
+});
+
 test("registry bounds memory, expires receipts, and rejects late reports from a reused ID epoch", t => {
   const { registry, advance } = fixture(t, { maxEntries: 2, terminalTtlMs: 20, runningTtlMs: 100 });
   const a = randomUUID(), b = randomUUID(), c = randomUUID();

@@ -21,6 +21,7 @@ const { convertRasterImage } = require("./image-conversion");
 const { isBmpFileSync, decodeBmpToRaw } = require("./bmp-input");
 const { xmlToJson } = require("./xml-json");
 const { convertEbook, convertTextToEpub } = require("./ebook");
+const { readTextInput } = require("./text-encoding");
 const { pandocPath } = require("./markdown-document");
 const yaml = require("js-yaml");
 const {
@@ -661,6 +662,21 @@ app.post("/api/merge-pdfs", assertLocalWebRequest, conversionProgress.begin, upl
   }
 });
 
+async function withEpubRequestCancellation(req, res, operation) {
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  const closed = () => { if (!res.writableFinished) abort(); };
+  req.once("aborted", abort);
+  res.once("close", closed);
+  if (req.aborted || res.destroyed) abort();
+  try {
+    return await operation(controller.signal);
+  } finally {
+    req.removeListener("aborted", abort);
+    res.removeListener("close", closed);
+  }
+}
+
 app.post("/api/convert", assertLocalWebRequest, conversionProgress.begin, upload.single("file"), conversionProgress.enter, async (req, res) => {
   let tools = await getTools();
   const file = req.file;
@@ -733,7 +749,10 @@ app.post("/api/convert", assertLocalWebRequest, conversionProgress.begin, upload
       if (["epub", "mobi"].includes(inputExt)) {
         conversionResult = await convertEbook(file.path, outputPath, inputExt, requestedTarget, originalName);
       } else if (requestedTarget === "epub") {
-        await convertTextToEpub(await fsp.readFile(file.path, "utf8"), inputExt, originalName, outputPath);
+        await withEpubRequestCancellation(req, res, async signal => {
+          const text = await readTextInput(file.path, { encoding: req.body?.textEncoding || "auto", signal });
+          return convertTextToEpub(text, inputExt, originalName, outputPath, { signal });
+        });
       } else {
         conversionResult = await convertText(file.path, outputPath, inputExt, requestedTarget, originalName);
       }
@@ -767,11 +786,17 @@ app.post("/api/convert", assertLocalWebRequest, conversionProgress.begin, upload
       conversionResult = await convertText(file.path, outputPath, inputExt, requestedTarget, originalName);
     } else if (category === "spreadsheet" && ["csv", "tsv"].includes(inputExt) && ["epub", "xlsx", "html", "pdf"].includes(requestedTarget)) {
       // LO 的 csv/tsv 导入过滤器 headless 下假成功（exit 0 零输出），全部用自有实现
-      const tabular = await readTabularText(file.path, inputExt);
-      if (requestedTarget === "epub") await convertTextToEpub(tabular, "csv", originalName, outputPath);
-      else if (requestedTarget === "xlsx") await convertCsvToXlsx(tabular, outputPath);
-      else if (requestedTarget === "html") await fsp.writeFile(outputPath, csvToHtmlTable(tabular), "utf8");
-      else await convertCsvToPdf(tabular, outputPath);
+      if (requestedTarget === "epub") {
+        await withEpubRequestCancellation(req, res, async signal => {
+          const tabular = await readTabularText(file.path, inputExt, { encoding: req.body?.textEncoding || "auto", signal });
+          return convertTextToEpub(tabular, "csv", originalName, outputPath, { signal });
+        });
+      } else {
+        const tabular = await readTabularText(file.path, inputExt);
+        if (requestedTarget === "xlsx") await convertCsvToXlsx(tabular, outputPath);
+        else if (requestedTarget === "html") await fsp.writeFile(outputPath, csvToHtmlTable(tabular), "utf8");
+        else await convertCsvToPdf(tabular, outputPath);
+      }
     } else if (category === "document" || category === "spreadsheet" || category === "presentation") {
       if (inputExt === "ofd") {
         // OFD（国标 GB/T 33190）走自有链路（ofd-convert.js → PDF），LibreOffice 打不开。

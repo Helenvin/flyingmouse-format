@@ -86,6 +86,18 @@
             </label>
             <p class="format-hint" id="pdfExcelHint" data-i18n="pdfExcel.hint" hidden>适合电子版规则表格；扫描件、复杂表头和合并单元格可能不完整。</p>
 
+            <div class="field" id="textEncodingField" hidden>
+              <label for="textEncoding" data-i18n="textEncoding.label">源文件编码</label>
+              <select id="textEncoding" aria-describedby="textEncodingHint">
+                <option value="auto" selected data-i18n="textEncoding.auto">自动（UTF-8 / UTF-16 BOM）</option>
+                <option value="utf-8" data-i18n="textEncoding.utf8">UTF-8</option>
+                <option value="gb18030" data-i18n="textEncoding.gb18030">GBK / GB18030</option>
+                <option value="utf-16le" data-i18n="textEncoding.utf16le">UTF-16LE</option>
+                <option value="utf-16be" data-i18n="textEncoding.utf16be">UTF-16BE</option>
+              </select>
+              <p class="field-help" id="textEncodingHint" data-i18n="textEncoding.hint">自动仅识别 UTF-8 或带 BOM 的 UTF-16。GBK 文本请手动选择；批量文本使用同一编码。</p>
+            </div>
+
             <label class="field" id="videoCodecField" hidden>
               <span data-i18n="videoCodec.label">视频编码</span>
               <select id="videoCodec">

@@ -57,6 +57,8 @@ const fileStrip = document.querySelector("#fileStrip");
 const fileName = document.querySelector("#fileName");
 const fileMeta = document.querySelector("#fileMeta");
 const targetSelect = document.querySelector("#targetSelect");
+const textEncodingField = document.querySelector("#textEncodingField");
+const textEncoding = document.querySelector("#textEncoding");
 const pdfExcelHint = document.querySelector("#pdfExcelHint");
 const videoCodecField = document.querySelector("#videoCodecField");
 const videoCodec = document.querySelector("#videoCodec");
@@ -148,6 +150,9 @@ const messages = {
     "pdfGroupSize.label": "每几页一组",
     "imagePdfMode.label": "多图转 PDF", "imagePdfMode.merge": "合并为一个 PDF（默认）", "imagePdfMode.separate": "每张图片单独生成 PDF",
     "settings.aria": "转换设置", "progress.label": "转换进度", "status.ready": "选择文件后会显示可用的转换格式。",
+    "textEncoding.label": "源文件编码", "textEncoding.auto": "自动（UTF-8 / UTF-16 BOM）",
+    "textEncoding.utf8": "UTF-8", "textEncoding.gb18030": "GBK / GB18030", "textEncoding.utf16le": "UTF-16LE", "textEncoding.utf16be": "UTF-16BE",
+    "textEncoding.hint": "自动仅识别 UTF-8 或带 BOM 的 UTF-16。GBK 文本请手动选择；批量文本使用同一编码。",
     "formats.aria": "支持格式", "formats.title": "当前支持",
     "formats.description": "文档转换会尽量保留排版；PDF 可导出页面图片，图片和扫描版 PDF 可 OCR 转 TXT。音频仅支持普通格式转换（MP3/WAV/FLAC/AAC/OGG 等），不支持其他音乐平台的加密特殊格式。",
     "sponsor.aria": "支持鼠鼠", "sponsor.close": "收起", "sponsor.title": "请鼠鼠吃小鱼干 🐟",
@@ -196,6 +201,9 @@ const messages = {
     "pdfGroupSize.label": "Pages per group",
     "imagePdfMode.label": "Multiple images to PDF", "imagePdfMode.merge": "Merge into one PDF (default)", "imagePdfMode.separate": "One PDF per image",
     "settings.aria": "Conversion settings", "progress.label": "Conversion progress", "status.ready": "Available target formats appear after you select files.",
+    "textEncoding.label": "Source text encoding", "textEncoding.auto": "Auto (UTF-8 / UTF-16 BOM)",
+    "textEncoding.utf8": "UTF-8", "textEncoding.gb18030": "GBK / GB18030", "textEncoding.utf16le": "UTF-16LE", "textEncoding.utf16be": "UTF-16BE",
+    "textEncoding.hint": "Auto accepts UTF-8 or UTF-16 with a BOM. Select GBK manually for GBK text. All text files in a batch use this encoding.",
     "formats.aria": "Supported formats", "formats.title": "Supported now",
     "formats.description": "Document conversion preserves layout where possible; PDFs can export page images, and images and scanned PDFs can be OCRed to TXT. Audio supports only ordinary formats (MP3/WAV/FLAC/AAC/OGG etc.); encrypted formats from music platforms are not supported.",
     "sponsor.aria": "Support Mouse", "sponsor.close": "Close", "sponsor.title": "Buy Mouse a dried fish 🐟",
@@ -391,7 +399,7 @@ const progressStages = {
   converting: ["转换文件", "Converting files"], merging: ["合并文件", "Merging files"],
   validating: ["验证输出", "Validating output"], receiving: ["接收转换结果", "Receiving conversion result"]
 };
-const progressUnits = { bytes: ["字节", "bytes"], pages: ["页", "pages"], files: ["个文件", "files"], seconds: ["秒", "seconds"] };
+const progressUnits = { bytes: ["字节", "bytes"], pages: ["页", "pages"], files: ["个文件", "files"], seconds: ["秒", "seconds"], chapters: ["章", "chapters"] };
 
 function setStageProgress(stage, completed = null, total = null, unit = null) {
   const known = Number.isFinite(completed) && Number.isFinite(total) && total > 0 && completed >= 0 && completed <= total && Object.hasOwn(progressUnits, unit);
@@ -577,6 +585,8 @@ function clearFile() {
   batchList.hidden = true;
   batchList.replaceChildren();
   setSelectPlaceholder(targetSelect, "", t("target.placeholder"));
+  if (textEncoding) textEncoding.value = "auto";
+  syncTextEncodingField();
   syncPdfExcelHint();
   targetSelect.disabled = true;
   convertButton.disabled = true;
@@ -821,7 +831,16 @@ function setBatchResult(index, patch) {
   renderBatchList();
 }
 
+function usesTextEncoding(file, targetFormat) {
+  return targetFormat === "epub" && /^(txt|md|markdown|html|htm|json|log|xml|yaml|yml|csv|tsv)$/.test(extensionOf(file?.name));
+}
+
+function syncTextEncodingField() {
+  if (textEncodingField) textEncodingField.hidden = !state.files.some(file => usesTextEncoding(file, targetSelect.value));
+}
+
 function syncVideoCodecField() {
+  syncTextEncodingField();
   if (!videoCodecField || !videoCodec) return;
   videoCodecField.hidden = !["mp4", "mov", "mkv"].includes(targetSelect.value);
   syncAlphaBackgroundField();
@@ -918,6 +937,8 @@ async function acceptFiles(fileList, options = {}) {
   const selectionVersion = ++state.selectionVersion;
   state.files = files;
   state.fileInfos = [];
+  if (textEncoding) textEncoding.value = "auto";
+  if (textEncodingField) textEncodingField.hidden = true;
   // 文件夹名：来自 <input webkitdirectory> 或拖入文件夹时 File.webkitRelativePath
   // 的第一个路径段（如 "相册2026/001.jpg" -> "相册2026"），用于图片合并 PDF 命名。
   const firstRel = files.find((file) => file.webkitRelativePath);
@@ -1034,6 +1055,7 @@ async function convertOneFile(file, targetFormat, options) {
   const form = new FormData();
   form.append("file", file);
   form.append("targetFormat", targetFormat);
+  if (usesTextEncoding(file, targetFormat)) form.append("textEncoding", options.textEncoding || "auto");
   if (["mp4", "mov", "mkv"].includes(targetFormat)) {
     form.append("videoCodec", options.videoCodec);
   }
@@ -1189,7 +1211,7 @@ function setConversionBusy(busy) {
   // Freeze every selection path, including hidden inputs and native keyboard
   // activation. A clear action is not a backend conversion cancellation.
   for (const control of [fileInput, folderInput, dropZone, chooseFolderButton, clearButton,
-    videoCodec, alphaBackground, pdfPassword, pdfAction, pdfSplitMode, pdfGroupSize, imagePdfMode]) {
+    videoCodec, alphaBackground, pdfPassword, pdfAction, pdfSplitMode, pdfGroupSize, imagePdfMode, textEncoding]) {
     if (control) control.disabled = busy;
   }
   convertButton.disabled = busy || !state.files.length || !targetSelect.value;
@@ -1213,6 +1235,7 @@ async function convertCurrentFiles() {
   const targetFormat = targetSelect.value;
   const files = [...state.files];
   const options = {
+    textEncoding: textEncoding?.value || "auto",
     isPdf: state.fileInfos.every((info) => info.category === "pdf"),
     videoCodec: videoCodec?.value || "h264", alphaBackground: alphaBackground?.value || "white",
     pdfAction: pdfAction?.value || "", password: pdfPassword?.value || "",

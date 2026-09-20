@@ -162,3 +162,87 @@ test("legacy requests without the optional progress header keep their response c
   const response = await fetch(origin + "/api/convert", { method: "POST", body: imageForm() });
   assert.equal(response.status, 200); const body = await response.json(); assert.equal(body.ok, true); assert.ok(body.downloadUrl); assert.equal(body.progress, undefined);
 });
+
+test("disconnecting an actual EPUB request stops compression and removes its unregistered output", async t => {
+  const { Transform } = require("node:stream");
+  const yazl = require("yazl"), addLazy = yazl.ZipFile.prototype.addReadStreamLazy;
+  let release, entered;
+  const barrier = new Promise(resolve => { release = resolve; });
+  const started = new Promise(resolve => { entered = resolve; });
+  t.after(release);
+  let ownOutput;
+  const createWriteStream = fs.createWriteStream;
+  t.mock.method(fs, "createWriteStream", (file, ...args) => {
+    if (path.resolve(String(file)).startsWith(path.resolve(config.OUTPUT_DIR) + path.sep)
+      && String(file).endsWith(".epub")) ownOutput = String(file);
+    return createWriteStream(file, ...args);
+  });
+  // Hold only a real chapter's byte stream. ZIP compression, HTTP, cancellation
+  // and cleanup are production code; no converter or response is substituted.
+  t.mock.method(yazl.ZipFile.prototype, "addReadStreamLazy", function (name, options, getStream) {
+    const original = typeof options === "function" ? options : getStream;
+    const wrapped = callback => original((error, input) => {
+      if (error || name !== "OEBPS/chapter-1.xhtml") return callback(error, input);
+      const held = new Transform({ transform(chunk, _encoding, done) {
+        entered(); barrier.then(() => done(null, chunk), done);
+      } });
+      input.on("error", error => held.destroy(error));
+      input.pipe(held); callback(null, held);
+    });
+    return typeof options === "function" ? addLazy.call(this, name, wrapped) : addLazy.call(this, name, options, wrapped);
+  });
+  const id = randomUUID(), controller = new AbortController(), form = new FormData();
+  const priorDownloads = config.downloads.size;
+  form.append("file", new Blob(["第一段。\n\n第二段。"]), "cancel-book.txt"); form.append("targetFormat", "epub");
+  const request = fetch(origin + "/api/convert", { method: "POST", signal: controller.signal,
+    headers: { "X-FlyingMouse-Progress-Id": id }, body: form });
+  request.catch(() => {});
+  let timeout;
+  try {
+    await Promise.race([started, new Promise((_, reject) => { timeout = setTimeout(() => reject(new Error("EPUB never reached chapter stream")), 5000); })]);
+  } finally { clearTimeout(timeout); }
+  assert.ok(ownOutput && fs.existsSync(ownOutput));
+  controller.abort(); await assert.rejects(request, { name: "AbortError" });
+  await waitForSnapshot(id, value => value.status === "failed");
+  release();
+  for (let i = 0; i < 100 && fs.existsSync(ownOutput); i++) await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal(fs.existsSync(ownOutput), false, "a disconnected request must not retain a completed EPUB");
+  assert.equal(config.downloads.size, priorDownloads, "cancelled EPUB must not enter the download registry");
+  assert.equal((await progress(id)).status, "failed");
+});
+
+test("EPUB auto encoding refuses malformed UTF-8 instead of publishing replacement characters", async () => {
+  const id = randomUUID(), form = new FormData();
+  form.append("file", new Blob([Buffer.from("d6d0cec4", "hex")]), "gbk-book.txt");
+  form.append("targetFormat", "epub"); form.append("textEncoding", "auto");
+  const response = await fetch(origin + "/api/convert", { method: "POST",
+    headers: { "X-FlyingMouse-Progress-Id": id }, body: form });
+  assert.equal(response.status, 422);
+  const body = await response.json();
+  assert.equal(body.errorCode, "EPUB_TEXT_DECODE_FAILED");
+  assert.match(body.messages.zhCN, /GBK/); assert.match(body.messages.enUS, /encoding/i);
+  assert.equal(body.downloadUrl, undefined);
+  assert.equal((await progress(id)).status, "failed");
+});
+
+test("explicit GBK and BOM-marked UTF-16 produce actual EPUBs with the original Chinese text", async () => {
+  const samples = [
+    { name: "gbk.txt", encoding: "gb18030", bytes: Buffer.from("d6d0cec40a6120262062", "hex"), expected: "中文<br />a &amp; b" },
+    { name: "utf16.txt", encoding: "auto", bytes: Buffer.from("\ufeff中文😀\n末尾", "utf16le"), expected: "中文😀<br />末尾" },
+    { name: "gbk.csv", encoding: "gb18030", bytes: Buffer.from("d6d0cec42c310a", "hex"), expected: "中文,1<br />" },
+    { name: "gbk.tsv", encoding: "gb18030", bytes: Buffer.from("d6d0cec409310a", "hex"), expected: '"中文","1"' }
+  ];
+  for (const sample of samples) {
+    const id = randomUUID(), form = new FormData();
+    form.append("file", new Blob([sample.bytes]), sample.name);
+    form.append("targetFormat", "epub"); form.append("textEncoding", sample.encoding);
+    const response = await fetch(origin + "/api/convert", { method: "POST",
+      headers: { "X-FlyingMouse-Progress-Id": id }, body: form });
+    const result = await response.json(); assert.equal(response.status, 200, JSON.stringify(result));
+    const output = path.join(root, id + ".epub");
+    fs.writeFileSync(output, Buffer.from(await (await fetch(origin + result.downloadUrl)).arrayBuffer()));
+    const archive = await require("jszip").loadAsync(fs.readFileSync(output), { checkCRC32: true });
+    assert.ok((await archive.file("OEBPS/chapter-1.xhtml").async("string")).includes(`<p>${sample.expected}</p>`), sample.name);
+    assert.equal((await progress(id)).status, "succeeded");
+  }
+});

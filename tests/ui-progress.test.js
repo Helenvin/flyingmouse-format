@@ -6,6 +6,20 @@ function deferred() { let resolve,reject; const promise=new Promise((yes,no)=>{r
 const result = name => ({status:200,body:{fileName:name,downloadUrl:'/downloads/11111111-1111-4111-8111-111111111111'}});
 const phase = (id, stage, completed=null, total=null, unit=null, status='running') => ({status:200,body:{id,status,stage,completed,total,unit,elapsedMs:1000,updatedAt:Date.now()}});
 
+test('EPUB reports measured chapters with accurate English and Chinese units', async () => {
+  const held=deferred();let snapshot;
+  const page=await pageHarness(()=>held.promise,{}, {clock:true,targets:()=>({category:'text',targets:['epub']}),progress:()=>snapshot || {status:404,body:{}}});
+  await page.select(['book.txt']);const pending=page.convert();await turn();
+  const id=page.conversionHeaders[0]['X-FlyingMouse-Progress-Id'];
+  snapshot=phase(id,'converting',1,8,'chapters');await page.advance(600);
+  assert.match(page.find('#progressDetails').textContent,/1 \/ 8 chapters/);assert.equal(page.find('#progressPercent').textContent,'12%');
+  const language=page.find('#languageSelect');language.value='zh-CN';await language.dispatch('change');
+  assert.match(page.find('#progressDetails').textContent,/1 \/ 8 章/);assert.equal(page.find('#progressPercent').textContent,'12%');
+  snapshot=phase(id,'converting',8,8,'chapters');await page.advance(600);
+  assert.equal(page.find('#progressPercent').textContent,'阶段完成');assert.equal(page.find('#downloadButton').hidden,true);
+  held.resolve(result('book.epub'));await pending;assert.equal(page.find('#progressPercent').textContent,'100%');
+});
+
 test('a fully measured stage says stage complete in both languages while POST remains pending', async () => {
   const held=deferred(); let snapshot;
   const page=await pageHarness(()=>held.promise,{}, {clock:true,progress:()=>snapshot || {status:404,body:{}}});

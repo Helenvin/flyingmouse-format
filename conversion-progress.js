@@ -6,7 +6,7 @@ const { performance } = require("node:perf_hooks");
 const context = new AsyncLocalStorage();
 const ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const STAGES = new Set(["uploading", "preparing", "queued", "recognizing", "converting", "merging", "validating"]);
-const UNITS = new Set(["bytes", "pages", "files", "seconds"]);
+const UNITS = new Set(["bytes", "pages", "files", "seconds", "chapters"]);
 
 function normalizeId(id) {
   return typeof id === "string" && ID_PATTERN.test(id) ? id.toLowerCase() : null;

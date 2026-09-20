@@ -96,7 +96,7 @@ async function pageHarness(convert, bridge = {}, services = {}) {
       if (["/api/convert", "/api/convert-images-to-pdf", "/api/merge-pdfs"].includes(url)) {
         const file = options.body.get("file") || options.body.getAll('files')[0]; requests.push(file.name);
         conversionHeaders.push(options.headers);
-        const result = await convert(file, requests.length, url);
+        const result = await convert(file, requests.length, url, options.body);
         return response(result.body, result.status);
       }
       throw new Error(`Unexpected HTTP request: ${url}`);

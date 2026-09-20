@@ -36,7 +36,7 @@ function harness({ targets, convert } = {}) {
     mouseStateForConversion: () => "converting", rendererLog() {},
     setMouseState() {}, setWorkflowStep() {}, resetProgress() {}, setProgress() {},
     setStageProgress() {}, beginConversionProgress() {}, finishConversionProgress() {}, closePreview() {}, renderBatchList() {},
-    syncVideoCodecField() {}, syncPdfActionFields() {}, syncImagePdfModeField() {}, syncPdfExcelHint() {},
+    syncVideoCodecField() {}, syncTextEncodingField() {}, usesTextEncoding:()=>false, syncPdfActionFields() {}, syncImagePdfModeField() {}, syncPdfExcelHint() {},
     setBatchResult(index, patch) { state.batchResults[index] = { ...state.batchResults[index], ...patch }; },
     setSelectPlaceholder(select, value) { select.replaceChildren(); select.value = value; },
     document: { createElement: () => element() },
@@ -51,7 +51,7 @@ function harness({ targets, convert } = {}) {
   });
   for (const name of ["fileInput", "folderInput", "dropZone", "chooseFolderButton", "clearButton", "fileName", "fileMeta", "fileStrip",
     "batchList", "targetSelect", "convertButton", "downloadButton", "batchSaveButton", "previewButton", "videoCodec", "alphaBackground",
-    "pdfPassword", "pdfAction", "pdfSplitMode", "pdfGroupSize", "imagePdfMode"]) context[name] = element();
+    "pdfPassword", "pdfAction", "pdfSplitMode", "pdfGroupSize", "imagePdfMode", "textEncoding", "textEncodingField"]) context[name] = element();
   context.targetSelect.disabled = true;
   context.convertButton.disabled = true;
   // These cases exercise queue ownership, not the progress service. The full

@@ -15,6 +15,7 @@ const RAW_EXTENSIONS = rawInput;
 const FFMPEG_IMAGE_EXTENSIONS = new Set(["tga", "jp2", "j2k", "jxl", "qoi", "ppm"]);
 const { run } = require("./utils");
 const { throwIfCanceled } = require("./conversion-cancellation");
+const { reportConversionProgress } = require("./conversion-progress");
 const {
   LIMITS,
   ResourceLimitError,
@@ -28,7 +29,7 @@ const { convertRasterImage, WARNING_MESSAGES } = require("./image-conversion");
 // ICO 输出：把输入图缩放到多尺寸（16/24/32/48/64/128/256）生成 PNG 帧，组装成 ICO 容器。
 // ICO 是静态格式；动图只取第一帧并附动画压平警告（与其它静态图片目标一致）。
 async function convertToIco(inputPath, outputPath) {
-  const metadata = await sharp(inputPath, { animated: true, limitInputPixels: LIMITS.maxImagePixels }).metadata();
+  const metadata = await inspectImageMetadata(inputPath, true);
   const animated = Number(metadata.pages || 1) > 1;
   const warnings = [];
   if (animated) warnings.push({ code: "ANIMATION_FLATTENED", messages: WARNING_MESSAGES.ANIMATION_FLATTENED });
@@ -390,8 +391,8 @@ function writePdfChunk(stream, buffer, pos) {
   });
 }
 
-// 图片合并为 PDF：逐张解码、即时流式写盘，内存占用与图片数量无关（O(1)），
-// 因此不因「图片过多」而失败。每张图以原始分辨率整页内嵌、不做缩放，质量不降。
+// 图片合并为 PDF：逐张解码、流式写盘并释放整图数据，元数据与页目录仍按页数增长。
+// 先检查设备预算；每张图以原始分辨率整页内嵌，不为满足预算而缩放。
 async function convertImagesToPdf(imageFiles, outputPath, options = {}) {
   const { signal, onProgress = () => {} } = options;
   throwIfCanceled(signal);
@@ -399,8 +400,9 @@ async function convertImagesToPdf(imageFiles, outputPath, options = {}) {
     throw new Error("请先选择要转换为 PDF 的图片。");
   }
 
-  // 只做元数据级校验（预算上限已按「不限数量」禁用；这里仅保留对损坏图片的
-  // 输入有效性检查，让坏文件在开工前统一暴露，而不是写一半才失败）。
+  // Validate dimensions and the finite device budget before decoding pixels or
+  // writing pages, so invalid/oversized input cannot produce partial success.
+  reportConversionProgress({ stage: "preparing" });
   const metadataList = [];
   for (const file of imageFiles) {
     throwIfCanceled(signal);
@@ -415,6 +417,7 @@ async function convertImagesToPdf(imageFiles, outputPath, options = {}) {
 
   // 页对象编号是确定的（3 + index*3），可先算好 Kids 列表，再写 /Pages 对象 2。
   const count = imageFiles.length;
+  reportConversionProgress({ stage: "merging", completed: 0, total: count, unit: "pages" });
   const pageRefs = [];
   for (let index = 0; index < count; index += 1) {
     pageRefs.push(`${3 + index * 3} 0 R`);
@@ -478,6 +481,7 @@ async function convertImagesToPdf(imageFiles, outputPath, options = {}) {
       offsets[contentNumber] = pos.value;
       const content = `q\n${pdfNumber(pageWidth)} 0 0 ${pdfNumber(pageHeight)} 0 0 cm\n/Im${index + 1} Do\nQ\n`;
       await writePdfChunk(stream, pdfAscii(`${contentNumber} 0 obj\n<< /Length ${Buffer.byteLength(content, "latin1")} >>\nstream\n${content}endstream\nendobj\n`), pos);
+      reportConversionProgress({ stage: "merging", completed: index + 1, total: count, unit: "pages" });
       onProgress({ stage: "merging", completedPages: index + 1, totalPages: count, percent: (index + 1) / count * 100 });
       throwIfCanceled(signal);
     }
@@ -494,6 +498,7 @@ async function convertImagesToPdf(imageFiles, outputPath, options = {}) {
 
     stream.end();
     await completion;
+    reportConversionProgress({ stage: "validating" });
   } catch (error) {
     stream.destroy();
     await completion.catch(() => {});

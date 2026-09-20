@@ -26,8 +26,8 @@ function harness({ targets, convert } = {}) {
     append(option) { this.options.push(option); if (!this.value) this.value = option.value; },
     setAttribute() {}, classList: { add() {}, remove() {} } });
   const context = vm.createContext({
-    state, i18n: { language: "en-US" }, t: key => key, statuses,
-    setStatus(message, type) { statuses.push({ message, type }); },
+    state, performance, i18n: { language: "en-US" }, t: key => key, statuses,
+    setStatus(message, type) { statuses.push({ message: typeof message === "function" ? message() : message, type }); },
     loadTargets: file => targets ? targets(file) : Promise.resolve({ category: "text", targets: ["md"] }),
     commonTargetsFrom: infos => infos[0]?.targets.filter(target => infos.every(info => info.targets.includes(target))) || [],
     summarizeFiles: files => ({ name: files.map(file => file.name).join(", "), meta: "" }),
@@ -35,7 +35,7 @@ function harness({ targets, convert } = {}) {
     categoryLabel: value => value, isLongTaskTarget: () => false,
     mouseStateForConversion: () => "converting", rendererLog() {},
     setMouseState() {}, setWorkflowStep() {}, resetProgress() {}, setProgress() {},
-    setIndeterminateProgress() {}, closePreview() {}, renderBatchList() {},
+    setStageProgress() {}, beginConversionProgress() {}, finishConversionProgress() {}, closePreview() {}, renderBatchList() {},
     syncVideoCodecField() {}, syncPdfActionFields() {}, syncImagePdfModeField() {}, syncPdfExcelHint() {},
     setBatchResult(index, patch) { state.batchResults[index] = { ...state.batchResults[index], ...patch }; },
     setSelectPlaceholder(select, value) { select.replaceChildren(); select.value = value; },
@@ -54,6 +54,14 @@ function harness({ targets, convert } = {}) {
     "pdfPassword", "pdfAction", "pdfSplitMode", "pdfGroupSize", "imagePdfMode"]) context[name] = element();
   context.targetSelect.disabled = true;
   context.convertButton.disabled = true;
+  // These cases exercise queue ownership, not the progress service. The full
+  // page ui-progress tests cover the real POST + polling helper separately.
+  context.postConversionWithProgress = async (url, body) => {
+    const response = await context.fetch(url, { method: "POST", body });
+    const result = await context.parseResponse(response);
+    if (!response.ok) throw context.responseError(result, response.status);
+    return result;
+  };
   vm.runInContext(`${targetLabelSource}\n${resetSource}\n${conversionSource}\n${selectionEvents}`, context);
   return { context, state, statuses, convertedNames, forms, accept: files => context.acceptFiles(files),
     clear: () => context.clearFile(), convert: () => context.convertCurrentFiles() };

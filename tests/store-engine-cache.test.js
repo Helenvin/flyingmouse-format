@@ -306,13 +306,17 @@ test("default Store cache leaves native path margin after redirection and a long
     [`${LO_SUB}/soffice.com`.split(path.sep).join("/")]:{size:10}
   }}));
   for(const user of ['34615','abcdefghijklmnopqrstuvwxyzABCDEF']){
-    const local=path.win32.join('C:\\Users',user,'AppData','Local');
+    // Resolve on the executing host, then project the relative cache layout
+    // into the physical Windows Store path. Never feed C:\\ to POSIX resolve.
+    const local=path.join(path.parse(bundle).root,'Users',user,'AppData','Local');
     const root=resolveOfficeEnginesRoot(local);
     const destination=resolveWritableEngineBundle({bundledBundle:bundle,enginesRoot:root});
     assert.match(destination.bundleName,/^lo-[a-f0-9]{32}$/);
     assert.match(destination.key,/^[a-f0-9]{64}$/,'directory abbreviation must not abbreviate content identity');
-    const redirected=path.win32.join(local,'Packages','488B6338.354574AC174AD_7248mmq7yzyj2','LocalCache','Local');
-    const relative=path.win32.relative(local,destination.destBundle);
+    const windowsLocal=path.win32.join('C:\\Users',user,'AppData','Local');
+    const redirected=path.win32.join(windowsLocal,'Packages','488B6338.354574AC174AD_7248mmq7yzyj2','LocalCache','Local');
+    const relative=path.relative(local,destination.destBundle).split(path.sep).join('\\');
+    assert.equal(relative,path.win32.join('FMF','e',destination.bundleName));
     const physical=path.win32.join(redirected,`${relative}.staging`,
       'LibreOfficePortable','App','libreoffice','share','registry','lingucomponent.xcd');
     assert.ok(physical.length<=240,`native configuration path needs margin: ${physical.length} ${physical}`);

@@ -9,6 +9,7 @@ const { test } = require("node:test");
 const {
   DEFAULT_MAX_BUFFER_BYTES,
   DEFAULT_TIMEOUT_MS,
+  structuredPdfThreadBudget,
   REQUIRED_MODELS,
   getStructuredPdfAvailability,
   preflightStructuredPdf,
@@ -16,6 +17,7 @@ const {
   withStructuredPdf
 } = require("../pdf-structure-engine");
 const realExecFile = promisify(execFileCallback);
+const { withConversionProgress } = require("../conversion-progress");
 
 test("registers the runner test and development engine/model candidates", () => {
   const packageJson = require("../package.json");
@@ -103,6 +105,142 @@ test("uses exact private parse arguments, no shell, and a ten-minute timeout", a
   assert.equal(path.dirname(call.args[4]), harness.runtimeDir);
   assert.match(path.basename(call.args[4]), /^fm-pdf-structure-/);
   assert.deepEqual(call.args.slice(5), ["--models", harness.modelDirectory, "--language", "ch"]);
+});
+
+test("budgets native calculation threads without occupying every available core", () => {
+  for (const [available, expected] of [[1, 1], [2, 1], [3, 1], [4, 2], [8, 4], [32, 4], [0, 1], [NaN, 1]]) {
+    assert.equal(structuredPdfThreadBudget(available), expected);
+  }
+});
+
+test("supports runtimes without availableParallelism", () => {
+  const parallelism = os.availableParallelism;
+  const cpus = os.cpus;
+  try {
+    os.availableParallelism = undefined;
+    os.cpus = () => [{}, {}, {}, {}];
+    assert.equal(structuredPdfThreadBudget(), 2);
+  } finally {
+    os.availableParallelism = parallelism;
+    os.cpus = cpus;
+  }
+});
+
+test("sets the native thread budget before child initialization without changing the parent environment", async t => {
+  const harness = await createHarness(t);
+  const previous = { OMP_NUM_THREADS: process.env.OMP_NUM_THREADS, MKL_NUM_THREADS: process.env.MKL_NUM_THREADS };
+  process.env.OMP_NUM_THREADS = "99";
+  process.env.MKL_NUM_THREADS = "98";
+  t.after(() => {
+    for (const [name, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[name]; else process.env[name] = value;
+    }
+  });
+  await withStructuredPdf(harness.inputPath, options(harness, async (_file, args, processOptions) => {
+    const result = await realExecFile(process.execPath, ["-e",
+      "process.stdout.write(JSON.stringify([process.env.OMP_NUM_THREADS, process.env.MKL_NUM_THREADS]))"], processOptions);
+    const budget = String(structuredPdfThreadBudget());
+    assert.deepEqual(JSON.parse(result.stdout), [budget, budget]);
+    assert.equal(process.env.OMP_NUM_THREADS, "99");
+    assert.equal(process.env.MKL_NUM_THREADS, "98");
+    await fsp.writeFile(path.join(args[4], "manifest.json"), JSON.stringify(validManifest()));
+  }), async () => {});
+});
+
+test("serializes complete structured requests across boundaries, including their consumers", async t => {
+  const harness = await createHarness(t);
+  const firstProgress = [], secondProgress = [];
+  let entered, release;
+  const consuming = new Promise(resolve => { entered = resolve; });
+  const hold = new Promise(resolve => { release = resolve; });
+  let calls = 0;
+  const timeouts = [];
+  const runOptions = options(harness, async (_file, args, processOptions) => {
+    calls += 1;
+    timeouts.push(processOptions.timeout);
+    await fsp.writeFile(path.join(args[4], "manifest.json"), JSON.stringify(validManifest()));
+  });
+  const first = withConversionProgress({ report: event => firstProgress.push(event) }, () =>
+    createStructuredPdfBoundary()(harness.inputPath, runOptions, async () => { entered(); await hold; return "first"; }));
+  await consuming;
+  const second = withConversionProgress({ report: event => secondProgress.push(event) }, () =>
+    createStructuredPdfBoundary()(harness.inputPath, { ...runOptions, timeoutMs: 25 }, async () => "second"));
+  try {
+    await new Promise(resolve => setTimeout(resolve, 80));
+    assert.equal(calls, 1, "the waiting request must not initialize another native model instance");
+    assert.deepEqual(secondProgress, [{ stage: "queued" }]);
+    assert.equal(firstProgress.at(-1).stage, "validating", "queued status belongs only to the waiting request");
+  } finally {
+    release();
+    assert.deepEqual(await Promise.all([first, second]), ["first", "second"]);
+  }
+  assert.equal(calls, 2);
+  assert.equal(secondProgress.at(-1).stage, "validating");
+  assert.deepEqual(timeouts, [DEFAULT_TIMEOUT_MS, 25], "queue waiting must not consume the native execution timeout");
+  assert.deepEqual(await fsp.readdir(harness.runtimeDir), []);
+});
+
+test("cancels a queued structured request promptly and releases the next request after consumer failure", async t => {
+  const harness = await createHarness(t);
+  let entered, release;
+  const consuming = new Promise(resolve => { entered = resolve; });
+  const hold = new Promise(resolve => { release = resolve; });
+  let calls = 0;
+  const runOptions = options(harness, async (_file, args) => {
+    calls += 1;
+    await fsp.writeFile(path.join(args[4], "manifest.json"), JSON.stringify(validManifest()));
+  });
+  const failure = new Error("consumer failed");
+  const first = withStructuredPdf(harness.inputPath, runOptions, async () => { entered(); await hold; throw failure; });
+  const firstRejected = assert.rejects(first, error => error === failure);
+  await consuming;
+  const controller = new AbortController();
+  const canceled = withStructuredPdf(harness.inputPath, { ...runOptions, signal: controller.signal }, async () => assert.fail("canceled request consumed"));
+  const canceledRejected = expectCode(canceled, "CONVERSION_CANCELED");
+  const third = withStructuredPdf(harness.inputPath, runOptions, async () => "third");
+  try {
+    controller.abort();
+    await Promise.race([canceledRejected, new Promise((_, reject) => setTimeout(() => reject(new Error("queued cancellation stalled")), 300))]);
+    assert.equal(calls, 1);
+  } finally {
+    release();
+    await firstRejected;
+    await canceledRejected;
+    assert.equal(await third, "third");
+  }
+  assert.equal(calls, 2);
+  assert.deepEqual(await fsp.readdir(harness.runtimeDir), []);
+});
+
+test("application shutdown cancels queued requests before another model starts", async t => {
+  const harness = await createHarness(t);
+  const script = `
+    const path = require('node:path'), fs = require('node:fs/promises');
+    const { createStructuredPdfBoundary } = require(process.argv[1]);
+    const { beginApplicationShutdown } = require(process.argv[2]);
+    const harness = JSON.parse(process.argv[3]);
+    let started, release, calls = 0;
+    const entered = new Promise(resolve => { started = resolve; });
+    const hold = new Promise(resolve => { release = resolve; });
+    const boundary = createStructuredPdfBoundary({ preflightPdf: async () => ({ pageCount: 1 }) });
+    const options = { ...harness, execFile: async (_file, args) => {
+      calls++; started(); await hold;
+      await fs.writeFile(path.join(args[4], 'manifest.json'), '{}');
+    } };
+    (async () => {
+      const first = boundary(harness.inputPath, options, () => {}).catch(error => error.code);
+      await entered;
+      const second = boundary(harness.inputPath, options, () => {}).catch(error => error.code);
+      beginApplicationShutdown();
+      release();
+      process.stdout.write(JSON.stringify({ codes: await Promise.all([first, second]), calls,
+        remaining: await fs.readdir(harness.runtimeDir) }));
+    })().catch(error => { console.error(error); process.exitCode = 1; });
+  `;
+  const result = await realExecFile(process.execPath, ["-e", script,
+    path.join(__dirname, "..", "pdf-structure-engine.js"),
+    path.join(__dirname, "..", "conversion-cancellation.js"), JSON.stringify(harness)], { timeout: 10000, windowsHide: true });
+  assert.deepEqual(JSON.parse(result.stdout), { codes: ["CONVERSION_CANCELED", "CONVERSION_CANCELED"], calls: 1, remaining: [] });
 });
 
 test("injects a short timeout into a real direct child and cleans scratch", async (t) => {
@@ -363,6 +501,30 @@ async function writeBatchManifest(args, mutate = () => {}) {
   await fsp.writeFile(path.join(args[4], "page-001.png"), "reference");
   await fsp.writeFile(path.join(args[4], "manifest.json"), JSON.stringify(manifest));
 }
+
+test("structured progress advances only after each native batch passes validation", async t => {
+  const harness = await smallBatches(t);
+  const events = [];
+  let calls = 0;
+  await withConversionProgress({ report: event => events.push(event) }, () => withStructuredPdf(harness.inputPath, {
+    ...harness, execFile: async (_file, args) => {
+      assert.equal(events.filter(event => event.stage === "recognizing").at(-1).completed, calls);
+      calls++;
+      await writeBatchManifest(args);
+    }
+  }, async () => { assert.equal(events.at(-1).stage, "validating"); }));
+  assert.deepEqual(events.filter(event => event.stage === "recognizing").map(event => [event.completed, event.total]), [[0, 2], [1, 2], [2, 2]]);
+  assert.ok(!events.some(event => ["succeeded", "completed"].includes(event.stage)));
+});
+
+test("a rejected native batch never reports its pages complete", async t => {
+  const harness = await smallBatches(t);
+  const events = [];
+  await expectCode(withConversionProgress({ report: event => events.push(event) }, () => withStructuredPdf(harness.inputPath, {
+    ...harness, execFile: async (_file, args) => writeBatchManifest(args, manifest => { manifest.pages = []; })
+  }, async () => assert.fail("invalid result consumed"))), "PDF_STRUCTURE_SCHEMA_INVALID");
+  assert.deepEqual(events.filter(event => event.stage === "recognizing").map(event => event.completed), [0]);
+});
 
 for (const defect of ["missing", "duplicate", "escaped asset"]) {
   test(`a ${defect} page in a later batch rejects the entire document and cleans scratch`, async t => {

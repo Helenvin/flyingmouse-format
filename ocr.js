@@ -12,6 +12,7 @@ const { throwIfCanceled } = require("./conversion-cancellation");
 const { TESSDATA_PATH } = require("./config");
 const { LIMITS } = require("./resource-policy");
 const { inspectImageMetadata } = require("./image");
+const { reportConversionProgress } = require("./conversion-progress");
 
 let cachedTesseract = null;
 
@@ -257,6 +258,8 @@ async function recognizeImageResult(inputPath, options = {}) {
   throwIfCanceled(options.signal);
   const metadata = await inspectImageMetadata(inputPath, true);
   const pageCount = Number(metadata.pages || 1);
+  const progressPages = metadata.format === "tiff" ? pageCount : 1;
+  reportConversionProgress({ stage: "recognizing", completed: 0, total: progressPages, unit: "pages" });
   const worker = await createOcrWorker();
   let pageDirectory;
   try {
@@ -274,6 +277,8 @@ async function recognizeImageResult(inputPath, options = {}) {
         const result = await recognizeImageResultWithWorker(worker, pagePath, { ...options, pageNumber: pageIndex + 1 });
         pages.push({ pageNumber: pageIndex + 1, ...result });
         for (const warning of result.warnings) warnings.set(warning.code, warning);
+        throwIfCanceled(options.signal);
+        reportConversionProgress({ stage: "recognizing", completed: pageIndex + 1, total: progressPages, unit: "pages" });
         await fsp.rm(pagePath, { force: true });
       }
       const recognizedPages = pages.filter(page => page.text.trim());
@@ -295,6 +300,8 @@ async function recognizeImageResult(inputPath, options = {}) {
       };
     }
     const result = await recognizeImageResultWithWorker(worker, inputPath, options);
+    throwIfCanceled(options.signal);
+    reportConversionProgress({ stage: "recognizing", completed: 1, total: progressPages, unit: "pages" });
     if (pageCount > 1) {
       // Animation frames are not separate document pages. Keep the established
       // first-frame behavior, but make the omitted frames visible to the user.

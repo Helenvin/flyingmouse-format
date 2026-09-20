@@ -25,13 +25,13 @@ function harness() {
   const state = { files: [], fileInfos: [], batchResults: [], converted: null, isConverting: false, selectionVersion: 0,
     capabilities: {}, settings: { targetBySource: {} }, folderName: "" };
   const requests = [], statuses = [];
-  const context = vm.createContext({ state, requests, statuses, FormData, AbortController, setInterval, clearInterval,
+  const context = vm.createContext({ state, performance, requests, statuses, FormData, AbortController, setInterval, clearInterval,
     i18n: { language: "en-US" }, t: key => key, rendererLog() {},
     categoryLabel: value => value, isLongTaskTarget: () => false, mouseStateForConversion: () => "converting",
     setMouseState() {}, setWorkflowStep() {}, resetProgress() {}, setProgress() {}, setStageProgress() {}, updateProgressDetail() {},
-    renderQqMusicConnection() {}, setIndeterminateProgress() {}, renderBatchList() {}, closePreview() {}, saveConvertedFile() {}, saveAllConvertedFiles() {},
+    renderQqMusicConnection() {}, beginConversionProgress() {}, finishConversionProgress() {}, renderBatchList() {}, closePreview() {}, saveConvertedFile() {}, saveAllConvertedFiles() {},
     syncVideoCodecField() {}, syncPdfExcelHint() {}, persistSettings: async () => {}, rememberTarget: () => ({}),
-    setStatus(message, type) { statuses.push({ message, type }); }, formatSize: String,
+    setStatus(message, type) { statuses.push({ message: typeof message === "function" ? message() : message, type }); }, formatSize: String,
     extensionOf: name => name.split(".").at(-1), preferredTarget: () => null,
     setSelectPlaceholder(select, value) { select.replaceChildren(); select.value = value; },
     setBatchResult(index, patch) { state.batchResults[index] = { ...state.batchResults[index], ...patch }; },
@@ -52,6 +52,14 @@ function harness() {
   context.imagePdfMode.options = ["merge", "separate"].map(value => Object.assign(element("option"), { value }));
   context.imagePdfMode.value = "merge";
   context.previewDrawer.hidden = true;
+  // Operation routing is independent of progress transport, which is covered
+  // through the actual full page in ui-progress.test.js.
+  context.postConversionWithProgress = async (url, body) => {
+    const response = await context.fetch(url, { method: "POST", body });
+    const result = await context.parseResponse(response);
+    if (!response.ok) throw context.responseError(result, response.status);
+    return result;
+  };
   context.window = { FlyingMouseProgress: { createRequest: () => ({ send: (url, body) => context.fetch(url, { body }), close() {}, cancel: async () => {} }) } };
   vm.runInContext([
     range("function resetDownload()", "let capabilityRefreshTimer;"),

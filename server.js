@@ -7,7 +7,8 @@ const zlib = require("zlib");
 const { fileURLToPath, pathToFileURL } = require("url");
 const express = require("express");
 const mime = require("mime-types");
-const multer = require("multer");
+const { createBudgetedUpload } = require("./upload-budget");
+const { createProgressHttpLifecycle, reportConversionProgress } = require("./conversion-progress");
 const sanitize = require("sanitize-filename");
 const sharp = require("sharp");
 const ExcelJS = require("exceljs");
@@ -61,6 +62,8 @@ const {
   outputNameFor,
   outputPathFor,
   registerDownload,
+  releaseDownloads,
+  retainDownloadResponse,
   escapeHtml
 } = require("./utils");
 const { convertMedia, probeAudioTrack } = require("./media");
@@ -201,10 +204,8 @@ const CONTENT_SECURITY_POLICY = [
 
 let cachedTesseract = null;
 
-const upload = multer({
-  dest: UPLOAD_DIR,
-  limits: { fileSize: MAX_UPLOAD_BYTES }
-});
+const upload = createBudgetedUpload({ directory: UPLOAD_DIR, maxFileBytes: MAX_UPLOAD_BYTES });
+const conversionProgress = createProgressHttpLifecycle();
 
 // 只清理「孤儿」临时文件：不在 downloads 登记表里、且超过 PRODUCT_EXPIRY_MS 未修改
 // 的（上传残留/崩溃残片）。已登记产物在程序运行期间永不过期（2026-09-07 决策：
@@ -452,7 +453,22 @@ function resourceErrorPayload(error) {
   };
 }
 
+function normalizeResourceError(error) {
+  if (error instanceof ResourceLimitError) return error;
+  if (/^Input image exceeds pixel limit\b/i.test(String(error?.message || ""))) {
+    return new ResourceLimitError("IMAGE_PIXELS_EXCEEDED");
+  }
+  if (error?.code === "LIMIT_FILE_COUNT") {
+    return new ResourceLimitError("UPLOAD_FILE_COUNT_EXCEEDED", { limitFiles: LIMITS.maxUploadFiles });
+  }
+  if (error?.code === "LIMIT_FILE_SIZE") {
+    return new ResourceLimitError("UPLOAD_FILE_SIZE_EXCEEDED", { limitGiB: MAX_UPLOAD_BYTES / 1024 ** 3 });
+  }
+  return error;
+}
+
 function sendResourceError(res, error) {
+  error = normalizeResourceError(error);
   if (!(error instanceof ResourceLimitError)) return false;
   res.status(413).json(resourceErrorPayload(error));
   return true;
@@ -494,7 +510,9 @@ app.post("/api/targets", async (req, res) => {
   res.json({ extension: ext, category: categoryForExt(ext), targets: targetsForExt(ext, tools), experimental: experimentalInputSet.has(ext) });
 });
 
-app.post("/api/convert-images-to-pdf", assertLocalWebRequest, upload.array("files"), async (req, res) => {
+app.get("/api/conversion-progress/:id", assertLocalWebRequest, conversionProgress.get);
+
+app.post("/api/convert-images-to-pdf", assertLocalWebRequest, conversionProgress.begin, upload.array("files"), conversionProgress.enter, async (req, res) => {
   const files = req.files || [];
 
   try {
@@ -555,12 +573,15 @@ app.post("/api/convert-images-to-pdf", assertLocalWebRequest, upload.array("file
   logger.info(`Images-to-PDF request: ${imageFiles.length} image(s) -> "${downloadName}"`);
 
   try {
+    reportConversionProgress({ stage: "merging" });
     await convertImagesToPdf(imageFiles, outputPath);
+    reportConversionProgress({ stage: "validating" });
     await Promise.all(files.map((file) => fsp.rm(file.path, { force: true }).catch(() => {})));
     const mimeType = "application/pdf";
     logger.info(`Images-to-PDF succeeded: "${downloadName}"`);
     const registered = registerDownload(outputPath, downloadName, mimeType);
     const previewSize = (await fsp.stat(outputPath)).size;
+    conversionProgress.outputReady(req);
     res.json({
       ok: true,
       fileName: downloadName,
@@ -577,7 +598,7 @@ app.post("/api/convert-images-to-pdf", assertLocalWebRequest, upload.array("file
   }
 });
 
-app.post("/api/merge-pdfs", assertLocalWebRequest, upload.array("files"), async (req, res) => {
+app.post("/api/merge-pdfs", assertLocalWebRequest, conversionProgress.begin, upload.array("files"), conversionProgress.enter, async (req, res) => {
   const files = req.files || [];
 
   try {
@@ -611,12 +632,15 @@ app.post("/api/merge-pdfs", assertLocalWebRequest, upload.array("files"), async 
   logger.info(`Merge-PDFs request: ${pdfFiles.length} PDF(s) -> "${downloadName}"`);
 
   try {
+    reportConversionProgress({ stage: "merging" });
     await mergePdfFiles(pdfFiles, outputPath);
+    reportConversionProgress({ stage: "validating" });
     await Promise.all(files.map((file) => fsp.rm(file.path, { force: true }).catch(() => {})));
     logger.info(`Merge-PDFs succeeded: "${downloadName}"`);
     const mimeType = "application/pdf";
     const registered = registerDownload(outputPath, downloadName, mimeType);
     const previewSize = (await fsp.stat(outputPath)).size;
+    conversionProgress.outputReady(req);
     res.json({
       ok: true,
       fileName: downloadName,
@@ -637,7 +661,7 @@ app.post("/api/merge-pdfs", assertLocalWebRequest, upload.array("files"), async 
   }
 });
 
-app.post("/api/convert", assertLocalWebRequest, upload.single("file"), async (req, res) => {
+app.post("/api/convert", assertLocalWebRequest, conversionProgress.begin, upload.single("file"), conversionProgress.enter, async (req, res) => {
   let tools = await getTools();
   const file = req.file;
   const originalName = decodeUploadFileName(file?.originalname);
@@ -663,7 +687,9 @@ app.post("/api/convert", assertLocalWebRequest, upload.single("file"), async (re
   if (!tools.libreoffice && targetsForExt(inputExt, { ...tools, libreoffice: true }).includes(requestedTarget)
     && !targetsForExt(inputExt, tools).includes(requestedTarget)) {
     try {
+      reportConversionProgress({ stage: "queued" });
       await waitForOfficeReady();
+      reportConversionProgress({ stage: "preparing" });
       tools = await getTools();
       if (!tools.libreoffice) {
         const detail = cachedToolDetails.libreoffice;
@@ -698,6 +724,7 @@ app.post("/api/convert", assertLocalWebRequest, upload.single("file"), async (re
   let conversionResult = { warnings: [] };
 
   try {
+    reportConversionProgress({ stage: "converting" });
     if (category === "image") {
       conversionResult = await convertImage(file.path, outputPath, requestedTarget, { inputName: originalName });
     } else if (category === "subtitle") {
@@ -776,6 +803,7 @@ app.post("/api/convert", assertLocalWebRequest, upload.single("file"), async (re
       throw new Error("暂时无法识别这个文件类型。");
     }
 
+    reportConversionProgress({ stage: "validating" });
     await fsp.rm(file.path, { force: true }).catch(() => {});
     const mimeType = mime.lookup(downloadName) || "application/octet-stream";
     // md 转换产物若带图片外置目录（.assets/），随 downloads 一起注册，
@@ -802,8 +830,10 @@ app.post("/api/convert", assertLocalWebRequest, upload.single("file"), async (re
       payload.warnings = [...(payload.warnings || []), experimentalInputWarning(inputExt)];
     }
     logger.info(`Convert succeeded: "${originalName}" -> ${downloadName} (${requestedTarget})`);
+    conversionProgress.outputReady(req);
     res.json(payload);
   } catch (error) {
+    error = normalizeResourceError(error);
     const isClientConversionError = [
       "CSV_PARSE_FAILED",
       "PDF_TABLE_OCR_REQUIRED",
@@ -838,13 +868,25 @@ app.post("/api/convert", assertLocalWebRequest, upload.single("file"), async (re
   }
 });
 
+app.post("/api/downloads/release", assertLocalWebRequest, async (req, res) => {
+  const ids = req.body?.ids;
+  if (!Array.isArray(ids) || !ids.length || ids.length > 1000
+    || ids.some(id => typeof id !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id))) {
+    res.status(400).json({ error: "Invalid download IDs." });
+    return;
+  }
+  await releaseDownloads([...new Set(ids)]);
+  res.json({ ok: true });
+});
+
 app.get("/downloads/:id", (req, res) => {
   const item = downloads.get(req.params.id);
-  if (!item) {
+  if (!item || item.discarded) {
     res.status(404).send("File expired or not found.");
     return;
   }
 
+  retainDownloadResponse(item, res);
   res.download(item.filePath, item.downloadName, (error) => {
     if (!error) return;
     if (!res.headersSent) res.status(500).send(error.message);
@@ -855,7 +897,7 @@ app.get("/downloads/:id", (req, res) => {
 // 只允许读取该 downloads 条目登记的 assets 目录内的文件，防止路径穿越。
 app.get("/downloads/:id/asset/:name", async (req, res) => {
   const item = downloads.get(req.params.id);
-  if (!item || !/^[A-Za-z0-9-]+$/.test(req.params.id)) {
+  if (!item || item.discarded || !/^[A-Za-z0-9-]+$/.test(req.params.id)) {
     res.status(404).send("File expired or not found.");
     return;
   }
@@ -870,6 +912,7 @@ app.get("/downloads/:id/asset/:name", async (req, res) => {
     return;
   }
   const filePath = path.join(assetsDir, name);
+  retainDownloadResponse(item, res);
   try {
     const stat = await fsp.stat(filePath);
     if (!stat.isFile()) throw new Error("not a file");
@@ -885,10 +928,11 @@ app.get("/downloads/:id/asset/:name", async (req, res) => {
 
 app.get("/previews/:id", (req, res) => {
   const item = downloads.get(req.params.id);
-  if (!item || !/^[A-Za-z0-9-]+$/.test(req.params.id) || req.originalUrl.includes("?")) {
+  if (!item || item.discarded || !/^[A-Za-z0-9-]+$/.test(req.params.id) || req.originalUrl.includes("?")) {
     res.status(404).send("File expired or not found.");
     return;
   }
+  retainDownloadResponse(item, res);
   const inlineName = encodeURIComponent(path.basename(item.downloadName)).replaceAll("'", "%27");
   res.setHeader("Content-Type", item.mimeType || "application/octet-stream");
   res.setHeader("Content-Disposition", `inline; filename="preview"; filename*=UTF-8''${inlineName}`);
@@ -905,11 +949,7 @@ app.get("/previews/:id", (req, res) => {
 });
 
 app.use((error, _req, res, _next) => {
-  if (error?.code === "LIMIT_FILE_SIZE") {
-    logger.warn(`Rejected upload: file too large (max ${MAX_UPLOAD_BYTES} bytes)`);
-    res.status(413).json({ error: "文件太大，无法上传。请检查磁盘空间后重试。" });
-    return;
-  }
+  if (sendResourceError(res, error)) return;
   logger.error("Unhandled server error", error);
   res.status(500).json({ error: error.message || "服务器出错。" });
 });

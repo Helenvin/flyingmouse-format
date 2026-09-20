@@ -36,6 +36,26 @@ test("image PDF upload preserves repeated blank pages at the beginning, middle a
     assert.equal(pdf.getPageCount(), 4, "both requested blank pages must remain in the downloaded PDF: " + blanks);
   }
 });
+test("image merge publishes written page counts and remains running until output validation", async () => {
+  const { createProgressRegistry, withConversionProgress } = require("../conversion-progress");
+  const { randomUUID } = require("node:crypto");
+  const registry = createProgressRegistry({ sweepIntervalMs: 0 });
+  const id = randomUUID(), scope = registry.create(id), observed = [];
+  const output = path.join(scratch, "progress-pages.pdf");
+  try {
+    await withConversionProgress(scope, () => convertImagesToPdf([
+      { inputPath: input }, { blank: true }, { inputPath: input }
+    ], output, { onProgress() { observed.push(registry.get(id)); } }));
+    assert.deepEqual(observed.map(value => [value.stage, value.completed, value.total, value.unit]), [
+      ["merging", 1, 3, "pages"], ["merging", 2, 3, "pages"], ["merging", 3, 3, "pages"]
+    ]);
+    assert.ok(observed.every(value => value.status === "running"));
+    assert.equal(registry.get(id).stage, "validating");
+    assert.equal(registry.get(id).status, "running");
+    assert.equal((await PDFDocument.load(await fsp.readFile(output))).getPageCount(), 3);
+  } finally { registry.dispose(); }
+});
+
 test("image PDF merge stops after cancellation at the first completed page", async () => {
   const controller = new AbortController();
   const output = path.join(scratch, "canceled.pdf");

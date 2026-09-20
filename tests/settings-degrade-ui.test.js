@@ -52,6 +52,6 @@ test("startup settings fallbacks keep the legacy language preference", () => {
 });
 
 test("persist failure surfaces a one-shot non-blocking warning", () => {
-  assert.match(appSource, /if \(!settingsDegraded\) \{[\s\S]{0,160}setStatus\(t\("settings\.degraded"\), "warn"\);/,
+  assert.match(appSource, /if \(!settingsDegraded\) \{[\s\S]{0,160}setStatus\(\(\) => t\("settings\.degraded"\), "warn"\);/,
     "持久化失败提示复用一次性 settingsDegraded 警告");
 });

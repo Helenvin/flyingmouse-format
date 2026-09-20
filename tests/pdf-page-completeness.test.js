@@ -7,6 +7,7 @@ const { PDFDocument, StandardFonts } = require('pdf-lib');
 const { extractPdfRowsByPage } = require('../pdf-table');
 const { classifyPdf } = require('../pdf-classifier');
 const { convertPdf } = require('../pdf');
+const { withConversionProgress } = require('../conversion-progress');
 
 async function fixture(t, scan) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'fm-complete-'));
@@ -23,6 +24,45 @@ async function fixture(t, scan) {
   await fs.writeFile(input, await pdf.save());
   return { dir, input };
 }
+
+test('OCR progress counts completed pages and does not advance past a failed page', async () => {
+  const { fillMissingPdfPageText } = require('../pdf');
+  const events = [];
+  let calls = 0, terminated = false;
+  const pages = [{pageNumber:1, rows:[['native']]}, {pageNumber:2,rows:[]}, {pageNumber:3,rows:[]}];
+  await assert.rejects(withConversionProgress({report:event=>events.push(event)}, () => fillMissingPdfPageText('unused.pdf', pages, {
+    ocrAvailable:()=>true, createOcrWorker:async()=>({terminate:async()=>{terminated=true;}}),
+    renderPdfTablePage:async()=>({outputPath:'scan.png'}),
+    recognizeImageResultWithWorker:async()=>{
+      calls++;
+      assert.equal(events.at(-1).completed,calls-1);
+      if(calls===2)throw new Error('scan page failed');
+      return {text:'kept scan 1186.00',warnings:[]};
+    }
+  })), /scan page failed/);
+  assert.deepEqual(events.map(event=>[event.completed,event.total]),[[0,2],[1,2]]);
+  assert.equal(terminated,true);
+});
+
+test('PDF merge and native Poppler rendering report actual completed work', async t => {
+  const {mergePdfFiles,renderPdfPages}=require('../pdf');
+  const {PDFTOPPM_PATH}=require('../config');
+  const {commandExists}=require('../utils');
+  const {dir,input}=await fixture(t,false);
+  const mergeEvents=[];
+  const merged=path.join(dir,'merged.pdf');
+  await withConversionProgress({report:event=>mergeEvents.push(event)},()=>mergePdfFiles([{inputPath:input},{inputPath:input}],merged));
+  assert.deepEqual(mergeEvents.filter(event=>event.stage==='merging').map(event=>[event.completed,event.total,event.unit]),[[0,2,'files'],[1,2,'files'],[2,2,'files']]);
+  assert.equal((await PDFDocument.load(await fs.readFile(merged))).getPageCount(),4);
+  if(!(await commandExists(PDFTOPPM_PATH,['-v'])))return t.diagnostic('Poppler unavailable; native page progress check not run');
+  const renderEvents=[];
+  const rendered=await withConversionProgress({report:event=>renderEvents.push(event)},()=>renderPdfPages(merged,'png',36));
+  try{
+    assert.equal(rendered.files.length,4);
+    assert.deepEqual(renderEvents.filter(event=>event.stage==='converting').map(event=>event.completed),[0,1,2,3,4]);
+    for(const file of rendered.files)assert.ok((await fs.stat(file)).size>0);
+  }finally{await fs.rm(rendered.tempDir,{recursive:true,force:true});}
+});
 
 for (const target of ['txt', 'html', 'md']) {
   test(`native header over scan retains the body and native spelling in ${target}`, async t => {

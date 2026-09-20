@@ -1,6 +1,6 @@
-# 当前候选：0.7.9 稳定性修复
+# 当前候选：0.7.10 整体审查修复
 
-本分支保留公开功能版 0.7.5–0.7.8 修复，并继续 0.7.9 无响应恢复、退出清理及转换入口修复。当前验收边界见 [REPAIR-0.7.9.md](docs/REPAIR-0.7.9.md)；0.7.8 记录为历史基线。0.7.7 CAD 工作未纳入；本地音乐专用模块不在公开分支。源码同步不代表安装器发布或 Microsoft Store 认证。
+本分支保留 0.7.9 稳定性修复，并继续处理整体审查发现的内容丢失、数值误改、资源与 UI 生命周期问题。当前验收边界见 [REPAIR-0.7.10.md](docs/REPAIR-0.7.10.md)；旧修复说明保留历史状态。0.7.7 CAD 工作未纳入；本地音乐专用模块不在公开分支。源码同步不代表安装器发布或 Microsoft Store 认证。
 
 Windows 构建使用 package.json 的构建配置，需先准备锁定引擎与 MSVC。完整重建 EXE/ASAR 后由 afterSign 附加原生入口。不得关闭 GPU 或渲染器沙箱、全局重置 ACL 或按 Unknown Account 名称批量删除权限。
 
@@ -10,7 +10,7 @@ Windows 构建使用 package.json 的构建配置，需先准备锁定引擎与 
 
 FlyingMouse Format（飞鼠格式）是 Windows Electron 离线文件转换器。主产品必须使用原版鼠鼠 UI；它与“鼠鼠打印”是两个独立项目，禁止跨项目修改或混合发布物。
 
-当前技术栈：Electron 43、Windows 10/11 x64、鼠鼠 UI、中英文切换、批量转换、偏好与保存目录记忆。PDF 按原生/扫描内容分流，见 [架构](docs/ARCHITECTURE.md)；OFD 仅通过 `ofd-convert.js` 转 PDF，不走 LibreOffice。Windows 7 SP1 x64 只通过独立 staging 派生 Electron 22.3.27，禁止降低根 manifest 的主线依赖。当前候选与发布状态以 [0.7.9 修复说明](docs/REPAIR-0.7.9.md) 为准，不能从源码版本推断已安装或已发布版本。
+当前技术栈：Electron 43、Windows 10/11 x64、鼠鼠 UI、中英文切换、批量转换、偏好与保存目录记忆。PDF 按原生/扫描内容分流，见 [架构](docs/ARCHITECTURE.md)；OFD 仅通过 `ofd-convert.js` 转 PDF，不走 LibreOffice。Windows 7 SP1 x64 只通过独立 staging 派生 Electron 22.3.27，禁止降低根 manifest 的主线依赖。当前候选与发布状态以 [0.7.10 修复说明](docs/REPAIR-0.7.10.md) 为准，不能从源码版本推断已安装或已发布版本。
 
 ## Source map
 
@@ -54,7 +54,7 @@ FlyingMouse Format（飞鼠格式）是 Windows Electron 离线文件转换器�
 - PDF → DOCX/XLSX 先由 `pdf-classifier.js` 分类；扫描/混合页尝试 `docstructure`。DOCX 仅在 `pdf.js` 允许的错误码下回退 OCR 段落并提示版式损失；扫描 XLSX 不伪造成功或输出空表。
 - 原生 PDF → DOCX 优先 `docengine` 并检查内容完整性，失败回退 PDF.js/OCR；原生 PDF → XLSX 使用 `pdf-table-extractor.js` 的文字坐标/表格模型。轻量版、Win7、macOS 的可用引擎不同，必须按能力检测呈现目标与降级说明。
 - HTML / Office → Markdown 必须共用 ATX 标题、fenced 代码块的 Turndown helper；CSV 使用锁定的 `csv-parse 7.0.2`（修复已知原型处理问题），禁止退回按换行拆分的简易解析器。
-- 资源说明必须对应实现：普通图片/批量限制当前由 `resource-policy.js` 的 `LIMITS` 决定（现为 `Number.MAX_SAFE_INTEGER` 占位，不能宣称固定 50MP/2GB 防护）；高级结构识别使用 `STRUCTURED_PDF_LIMITS` 与 Python `DEFAULT_LIMITS`，含 500 页、单页 50MP、每批最多 8 页且累计 100MP（144 DPI）；JS 串行分批，500 页与输出/内容预算仍按整份 PDF 校验。不得宣称无限制或保证任意文件 1:1 还原；Sharp 不得使用 `limitInputPixels: false`。
+- 资源说明必须对应实现：普通图片、合并图片和通用 PDF 页数由 `resource-policy.js` 按设备内存计算有限预算；上传由 `upload-budget.js` 按实际临时盘空间累计约束并保护输出余量。超额明确拒绝，不跳页、不自动降采样。高级结构识别使用 `STRUCTURED_PDF_LIMITS` 与 Python `DEFAULT_LIMITS`，含 500 页、单页 50MP、每批最多 8 页且累计 100MP（144 DPI）；JS 串行分批且限制同时运行的完整识别请求。不得宣称无限制或保证任意文件 1:1 还原；Sharp 不得使用 `limitInputPixels: false`。
 - PDF → PNG/JPG 使用 Poppler，并因多页输出 ZIP。
 - 图片或扫描 PDF → TXT 使用 Tesseract OCR；图片 DOCX/Markdown 与 PDF Markdown 需传递质量和重排版式提示。多页 TIFF 必须逐页识别，动画仅识别首帧时明确提示。
 - SRT/VTT/ASS/SSA 互转及 TXT 导出保留时间轴和 Unicode；样式/位置/精度损失要提示，不能静默丢弃无法表示的绘图或事件。
@@ -129,7 +129,7 @@ npm audit --omit=dev --prefix output\win7-stage
 - `README.md`：面向用户的中英文介绍、下载与格式范围。
 - `docs/ARCHITECTURE.md`：运行架构、状态和数据边界。
 - `docs/RELEASE.md`：本机测试、打包、桌面同步与 GitHub 发布清单。
-- `docs/HANDOFF.md`：恢复工作入口；候选状态与剩余风险指向 `docs/REPAIR-0.7.9.md`。
+- `docs/HANDOFF.md`：恢复工作入口；候选状态与剩余风险指向 `docs/REPAIR-0.7.10.md`。
 - `docs/privacy-policy.html`：面向用户和 Microsoft Store 的隐私政策。
 - `docs/微软商店上架清单.md`、`docs/上架材料包.md`：商店渠道资料；外部审核状态必须写绝对日期并注明是否已现场复核。
 

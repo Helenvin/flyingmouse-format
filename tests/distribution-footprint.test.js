@@ -7,6 +7,40 @@ const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 const { test } = require("node:test");
 const { createQpdfFilter, trimQpdfDistribution } = require("../scripts/trim-qpdf-distribution");
+const { LIBREOFFICE_DISTRIBUTION_FILTER, APP_DISTRIBUTION_EXCLUSIONS, createLibreOfficeFilter, createApplicationFilter } = require("../scripts/distribution-filters");
+
+test("Windows packaging applies the validated distribution selection", () => {
+  const { build } = require("../package.json");
+  assert.deepEqual(build.win.extraResources.find(item => item.to === "libreoffice").filter, LIBREOFFICE_DISTRIBUTION_FILTER);
+  for (const exclusion of APP_DISTRIBUTION_EXCLUSIONS) assert.ok(build.files.includes(exclusion), exclusion);
+});
+
+test("LibreOffice reduction selects only thesauri and verified non-default UI themes", async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "fm-lo-distribution-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const remove = ["share/extensions/dict-de/th_de_DE_v2.dat", "share/extensions/dict-de/th_de_DE_v2.idx", "share/config/images_karasa_jaga_svg.zip", "share/config/images_breeze.zip"];
+  const keep = ["program/soffice.com", "program/vcllo.dll", "share/extensions/dict-de/de_DE.dic", "share/extensions/dict-de/de_DE.aff", "share/extensions/dict-de/hyph_de_DE.dic", "share/extensions/dict-de/LICENSE", "share/extensions/dict-de/README_th_de_DE.txt", "share/config/images_colibre.zip", "share/config/images_colibre_dark_svg.zip", "share/config/images_helpimg.zip", "share/config/images_future_theme.zip", "share/template/th_sample.dat"];
+  for (const prefix of ["", "LibreOfficePortable/App/libreoffice/"]) {
+    const filter = createLibreOfficeFilter(root);
+    for (const [files, expected] of [[remove, false], [keep, true]]) for (const relative of files) {
+      const file = path.join(root, prefix + relative);
+      await fs.mkdir(path.dirname(file), { recursive: true }); await fs.writeFile(file, relative);
+      assert.equal(filter(file, await fs.stat(file)), expected, prefix + relative);
+    }
+  }
+});
+
+test("application reduction keeps runtime code, OCR core and all license evidence", async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "fm-app-distribution-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const remove = ["node_modules/lib/runtime.js.map", "node_modules/pdfjs-dist/build/pdf.mjs.map", "node_modules/@tesseract.js-data/eng/4.0.0/eng.traineddata.gz", "node_modules/@tesseract.js-data/chi_sim/4.0.0_best_int/chi_sim.traineddata.gz", "node_modules/@tesseract.js-data/tha/4.0.0/tha.traineddata.gz"];
+  const keep = ["node_modules/lib/runtime.js", "node_modules/lib/LICENSE", "node_modules/pdfjs-dist/LICENSE", "node_modules/tesseract.js-core/tesseract-core.wasm", "node_modules/tesseract.js/src/worker-script/node/index.js", "node_modules/@tesseract.js-data/eng/LICENSE", "resources/tessdata/eng.traineddata.gz", "node_modules/map-data/geography.map"];
+  const filter = createApplicationFilter(root);
+  for (const [files, expected] of [[remove, false], [keep, true]]) for (const relative of files) {
+    const file = path.join(root, relative); await fs.mkdir(path.dirname(file), { recursive: true }); await fs.writeFile(file, relative);
+    assert.equal(filter(file, await fs.stat(file)), expected, relative);
+  }
+});
 
 async function fixture(t) {
   const parent = await fs.mkdtemp(path.join(os.tmpdir(), "fm-qpdf-distribution-"));

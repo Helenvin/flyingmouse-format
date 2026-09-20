@@ -157,6 +157,9 @@ function stageSourceEntries(basePackage) {
 
   const entries = new Set(["build", "tests", "win7-build-profile.js", ...REQUIRED_RUNTIME_FILES]);
   for (const pattern of basePackage.build.files) {
+    // Keep exclusions in build.files for electron-builder, but do not treat
+    // them as source paths when preparing the independent legacy workspace.
+    if (pattern.startsWith("!")) continue;
     if (pattern === "node_modules" || pattern.startsWith("node_modules/")) continue;
     if (pattern.endsWith("/**/*")) {
       entries.add(pattern.slice(0, -5));

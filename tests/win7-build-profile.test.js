@@ -157,6 +157,23 @@ test("stage source entries contain runtime source and assets but exclude node_mo
   assert.ok(!entries.some((entry) => entry.startsWith("node_modules/")));
 });
 
+test("Win7 staging retains distribution exclusions without copying exclusion globs", () => {
+  const { createWin7BuildProfile } = require("../win7-build-profile");
+  const input = structuredClone(rootPackage);
+  const exclusions = input.build.files.filter((entry) => entry.startsWith("!"));
+  assert.ok(exclusions.some((entry) => entry.includes(".map")), "source-map exclusion missing");
+  assert.ok(exclusions.some((entry) => entry.includes("traineddata.gz")), "OCR-data exclusion missing");
+  // Exclusion semantics belong to electron-builder, including future filters
+  // outside node_modules. They are never concrete source paths to stage.
+  input.build.files.push("!public/**/*.map");
+  const original = JSON.stringify(input);
+  const { packageJson, stagingEntries } = createWin7BuildProfile(input, path.resolve(__dirname, ".."));
+  assert.deepEqual(packageJson.build.files.filter((entry) => entry.startsWith("!")), [...exclusions, "!public/**/*.map"]);
+  assert.ok(!stagingEntries.some((entry) => entry.startsWith("!")), "an exclusion became a staging input");
+  assert.ok(stagingEntries.includes("public"));
+  assert.equal(JSON.stringify(input), original);
+});
+
 test("derived package and staging entries restore a missing required runtime module", () => {
   const { createWin7BuildProfile } = require("../win7-build-profile");
   const input = structuredClone(rootPackage);

@@ -212,12 +212,9 @@ test("capabilities expose stable conversion limits and Sharp keeps pixel protect
   const response = await fetch(`${baseUrl}/api/capabilities`);
   assert.equal(response.status, 200);
   const capabilities = await response.json();
-  assert.deepEqual(capabilities.limits, {
-    maxImagePixels: Number.MAX_SAFE_INTEGER,
-    maxImageDimension: Number.MAX_SAFE_INTEGER,
-    maxImagePdfPixels: Number.MAX_SAFE_INTEGER,
-    maxBatchBytes: Number.MAX_SAFE_INTEGER
-  });
+  assert.deepEqual(capabilities.limits, require('../resource-policy').LIMITS);
+  assert.ok(capabilities.limits.maxImagePixels < 100_000_000);
+  assert.ok(capabilities.limits.maxBatchBytes < Number.MAX_SAFE_INTEGER);
   assert.deepEqual(capabilities.groups.image.experimentalInputs, [...experimentalInputsByCategory.image, ...(DCRAW_PATH ? rawInput : [])].sort());
   assert.deepEqual(capabilities.groups.document.experimentalInputs, ["wpd", "wps", "wpt"]);
   assert.deepEqual(capabilities.groups.spreadsheet.experimentalInputs, ["et", "ett"]);

@@ -2,17 +2,62 @@ const childProcess = require("node:child_process");
 const ownedTasks = require("./owned-tasks");
 const fsp = require("node:fs/promises");
 const path = require("node:path");
+const os = require("node:os");
+const { reportConversionProgress } = require("./conversion-progress");
 
 const { RUNTIME_DIR, DOCSTRUCTURE_ENGINE_PATH, DOCSTRUCTURE_MODEL_DIR } = require("./config");
 const { structureError, validateStructureManifest } = require("./pdf-structure-contract");
 const { loadPdfjs } = require("./pdfjs");
-const { throwIfCanceled } = require("./conversion-cancellation");
+const { cancellationError, throwIfCanceled } = require("./conversion-cancellation");
 const { STRUCTURE_LIMITS } = require("./resource-policy");
 const logger = require("./logger");
 const ENGINE_PROFILE = require("./package.json").engineProfile;
 
 const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000;
 const DEFAULT_MAX_BUFFER_BYTES = 1024 * 1024;
+
+function structuredPdfThreadBudget(available = typeof os.availableParallelism === "function"
+  ? os.availableParallelism() : os.cpus().length) {
+  const cores = Number.isSafeInteger(available) && available > 0 ? available : 1;
+  return Math.max(1, Math.min(4, Math.floor(cores / 2)));
+}
+
+// One model set per application process, including output consumption and
+// cleanup. Separate API requests must not each load the full native model set.
+const structuredRequests = [];
+let structuredRequestActive = false;
+function startNextStructuredRequest() {
+  if (structuredRequestActive) return;
+  let request;
+  while ((request = structuredRequests.shift())) {
+    request.signal?.removeEventListener("abort", request.abort);
+    try { throwIfCanceled(request.signal); } catch (error) { request.reject(error); continue; }
+    structuredRequestActive = true;
+    let released = false;
+    request.resolve(() => {
+      if (released) return;
+      released = true;
+      structuredRequestActive = false;
+      startNextStructuredRequest();
+    });
+    return;
+  }
+}
+
+function acquireStructuredRequest(signal) {
+  throwIfCanceled(signal);
+  return new Promise((resolve, reject) => {
+    const request = { signal, resolve, reject, abort() {
+      const index = structuredRequests.indexOf(request);
+      if (index !== -1) structuredRequests.splice(index, 1);
+      signal?.removeEventListener("abort", request.abort);
+      reject(cancellationError());
+    } };
+    structuredRequests.push(request);
+    signal?.addEventListener("abort", request.abort, { once: true });
+    startNextStructuredRequest();
+  });
+}
 // AbortSignal can invoke execFile's callback before the process closes. Wait
 // for close before deleting its private output directory.
 function execFileAsync(file, args, options) {
@@ -267,6 +312,7 @@ function createStructuredPdfBoundary(dependencies = {}) {
 
     try {
       throwIfCanceled(options.signal);
+      const threadBudget = String(structuredPdfThreadBudget());
       // Task 8's engine is contractually single-process and must not spawn descendants.
       // execFile owns and times out only this direct child; no shell or process-tree termination is used.
       await runner(options.enginePath, args, {
@@ -275,7 +321,10 @@ function createStructuredPdfBoundary(dependencies = {}) {
         maxBuffer: DEFAULT_MAX_BUFFER_BYTES,
         windowsHide: true,
         signal: options.signal,
-        env: { ...process.env, TEMP: options.nativeTemporaryDirectory,
+        // Paddle's Python wrapper sets these after importing its libraries.
+        // Supply the bounded budget before native libraries initialize pools.
+        env: { ...process.env, OMP_NUM_THREADS: threadBudget,
+          MKL_NUM_THREADS: threadBudget, TEMP: options.nativeTemporaryDirectory,
           TMP: options.nativeTemporaryDirectory, TMPDIR: options.nativeTemporaryDirectory }
       });
       throwIfCanceled(options.signal);
@@ -338,7 +387,7 @@ function createStructuredPdfBoundary(dependencies = {}) {
     }
   }
 
-  return async function structuredPdfBoundary(inputPath, options = {}, consume) {
+  async function runStructuredPdf(inputPath, options, consume) {
     if (typeof consume !== "function") throw new TypeError("consume must be a function");
 
     throwIfCanceled(options.signal);
@@ -350,6 +399,7 @@ function createStructuredPdfBoundary(dependencies = {}) {
     if (!availability.enabled) throw stableError(availability.errorCode, options.engineProfile);
     const plan = await (dependencies.preflightPdf || preflightStructuredPdf)(inputPath,
       { fileSystem, signal: options.signal, maxBatchPixels: options.maxBatchPixels });
+    reportConversionProgress({ stage: "recognizing", completed: 0, total: plan.pageCount, unit: "pages" });
 
     let temporaryDirectory, nativeTemporaryDirectory;
     try {
@@ -370,6 +420,8 @@ function createStructuredPdfBoundary(dependencies = {}) {
       let manifest;
       if (batches.length === 1) {
         manifest = await runAndLoadManifest(inputPath, temporaryDirectory, runOptions, totals, batches[0]);
+        throwIfCanceled(options.signal);
+        reportConversionProgress({ stage: "recognizing", completed: plan.pageCount, total: plan.pageCount, unit: "pages" });
       } else {
         const { PDFDocument } = require("pdf-lib");
         throwIfCanceled(options.signal);
@@ -408,11 +460,14 @@ function createStructuredPdfBoundary(dependencies = {}) {
             throw stableError("PDF_STRUCTURE_RESOURCE_LIMIT");
           }
           await (options.validateManifest || validateStructureManifest)(manifest, temporaryDirectory);
+          throwIfCanceled(options.signal);
+          reportConversionProgress({ stage: "recognizing", completed: batch.endPage, total: plan.pageCount, unit: "pages" });
           await fileSystem.rm(batchInput, { force: true });
         }
         manifest = await (options.validateManifest || validateStructureManifest)(manifest, temporaryDirectory);
       }
       throwIfCanceled(options.signal);
+      reportConversionProgress({ stage: "validating" });
       result = await consume(manifest, temporaryDirectory);
       throwIfCanceled(options.signal);
     } catch (error) {
@@ -431,11 +486,21 @@ function createStructuredPdfBoundary(dependencies = {}) {
     if (operationError) throw operationError;
     if (cleanupFailed) throw stableError("PDF_STRUCTURE_PARSE_FAILED");
     return result;
+  }
+
+  return async function structuredPdfBoundary(inputPath, options = {}, consume) {
+    reportConversionProgress({ stage: structuredRequestActive ? "queued" : "preparing" });
+    const release = await acquireStructuredRequest(options.signal);
+    try {
+      return await runStructuredPdf(inputPath, options, consume);
+    } finally {
+      release();
+    }
   };
 }
 
 const withStructuredPdf = createStructuredPdfBoundary();
 
-module.exports = { DEFAULT_MAX_BUFFER_BYTES, DEFAULT_TIMEOUT_MS, REQUIRED_MODELS,
+module.exports = { DEFAULT_MAX_BUFFER_BYTES, DEFAULT_TIMEOUT_MS, REQUIRED_MODELS, structuredPdfThreadBudget,
   STRUCTURED_PDF_LIMITS, getStructuredPdfAvailability, preflightStructuredPdf,
   createStructuredPdfBoundary, withStructuredPdf };

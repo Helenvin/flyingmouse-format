@@ -3,6 +3,45 @@
 
 const { FFMPEG_PATH } = require("./config");
 const { run } = require("./utils");
+const { reportConversionProgress, captureConversionProgressReporter } = require("./conversion-progress");
+
+function createMediaProgressObserver(report = captureConversionProgressReporter(), { allowDuration = true } = {}) {
+  let closed = false, duration = null, seconds = 0, input = null;
+  const pending = { stdout: "", stderr: "" };
+  const emit = () => {
+    if (!closed) report({ stage: "converting", completed: duration === null ? seconds : Math.min(seconds, duration), total: duration, unit: "seconds" });
+  };
+  function accept(stream, chunk) {
+    if (closed) return;
+    // Native progress keys are ASCII. Never retain an unbounded stderr line or
+    // expose filenames/native diagnostics as progress text.
+    pending[stream] += chunk.toString("utf8");
+    let end;
+    while ((end = pending[stream].indexOf("\n")) !== -1) {
+      const line = pending[stream].slice(0, end).trim();
+      pending[stream] = pending[stream].slice(end + 1);
+      if (stream === "stderr") {
+        const header = /^Input #(\d+),/.exec(line);
+        if (header) input = Number(header[1]);
+        const match = input === 0 && allowDuration && duration === null
+          ? /^Duration:\s*(\d+):(\d{2}):(\d{2}(?:\.\d+)?),/.exec(line) : null;
+        if (match) {
+          const value = Number(match[1]) * 3600 + Number(match[2]) * 60 + Number(match[3]);
+          if (Number.isFinite(value) && value > 0) { duration = value; emit(); }
+        }
+      } else {
+        const match = /^out_time_us=(\d+)$/.exec(line);
+        if (match) {
+          const value = Number(match[1]) / 1000000;
+          if (Number.isFinite(value) && value >= seconds) { seconds = value; emit(); }
+        }
+      }
+    }
+    if (pending[stream].length > 16384) pending[stream] = "";
+  }
+  return { onStdout: chunk => accept("stdout", chunk), onStderr: chunk => accept("stderr", chunk),
+    close() { closed = true; pending.stdout = pending.stderr = ""; } };
+}
 
 async function probeAudioTrack(inputPath) {
   try {
@@ -71,6 +110,7 @@ function videoEncoderArgs(codec) {
 }
 
 async function convertMedia(inputPath, outputPath, target, category, options = {}) {
+  reportConversionProgress({ stage: "converting", completed: 0, total: null, unit: "seconds" });
   const args = ["-hide_banner", "-y", "-i", inputPath];
   for (const extraInput of options.extraInputs || []) args.push("-i", extraInput);
 
@@ -128,8 +168,14 @@ async function convertMedia(inputPath, outputPath, target, category, options = {
   }
   args.push(...(options.coverArgs || []));
 
-  args.push(outputPath);
-  await run(FFMPEG_PATH, args, { timeout: 1000 * 60 * 30 });
+  args.push("-progress", "pipe:1", "-nostats", outputPath);
+  // With extra inputs the output timeline need not equal input #0's duration.
+  const progress = createMediaProgressObserver(undefined, { allowDuration: !(options.extraInputs || []).length });
+  try {
+    await run(FFMPEG_PATH, args, { timeout: 1000 * 60 * 30, signal: options.signal,
+      onStdout: progress.onStdout, onStderr: progress.onStderr });
+    reportConversionProgress({ stage: "validating" });
+  } finally { progress.close(); }
 }
 
 module.exports = {
@@ -137,5 +183,6 @@ module.exports = {
   probeVideoInfo,
   videoEncoderArgs,
   alphaCompositeArgs,
-  convertMedia
+  convertMedia,
+  createMediaProgressObserver
 };

@@ -13,11 +13,135 @@ const {
   REQUIRED_MODELS,
   getStructuredPdfAvailability,
   preflightStructuredPdf,
-  createStructuredPdfBoundary,
-  withStructuredPdf
+  createStructuredPdfBoundary: createUnconfiguredBoundary
 } = require("../pdf-structure-engine");
+// These fixtures replace native inference, so their memory availability must
+// not depend on how much RAM the CI worker happens to have left. Admission
+// tests below inject their own changing snapshots or exercise the OS default.
+const GiB = 1024 ** 3;
+const createStructuredPdfBoundary = (dependencies = {}) => createUnconfiguredBoundary({ getFreeMemory: () => 8 * GiB, ...dependencies });
+const withStructuredPdf = createStructuredPdfBoundary();
 const realExecFile = promisify(execFileCallback);
 const { withConversionProgress } = require("../conversion-progress");
+
+test("model memory admission rejects a 4 GiB machine before preflight or native execution", async t => {
+  const harness = await createHarness(t);
+  let preflights = 0, calls = 0;
+  const boundary = createStructuredPdfBoundary({ getFreeMemory: () => 3.5 * GiB,
+    preflightPdf: async () => { preflights++; return { pageCount: 1 }; } });
+  await assert.rejects(boundary(harness.inputPath, options(harness, () => { calls++; }), async () => {}), error => {
+    assert.equal(error.code, "PDF_STRUCTURE_MEMORY_INSUFFICIENT");
+    assert.deepEqual(error.details, { minimumFreeBytes: 5 * GiB, availableBytes: 3.5 * GiB });
+    assert.match(error.messages.zhCN, /3\.5.*5/); assert.match(error.messages.enUS, /3\.5.*5/);
+    assert.match(error.messages.zhCN, /PDF.*TXT/); return true;
+  });
+  assert.equal(preflights, 0); assert.equal(calls, 0);
+  assert.deepEqual(await fsp.readdir(harness.runtimeDir), []);
+});
+
+test("model memory admission allows the exact threshold without changing parsed output", async t => {
+  const harness = await createHarness(t); let reads = 0, calls = 0;
+  const boundary = createStructuredPdfBoundary({ getFreeMemory: () => { reads++; return 5 * GiB; } });
+  const result = await boundary(harness.inputPath, options(harness, async (_file, args) => {
+    calls++; await fsp.writeFile(path.join(args[4], "manifest.json"), JSON.stringify(validManifest()));
+  }), async manifest => manifest);
+  assert.deepEqual(result, validManifest()); assert.equal(calls, 1); assert.equal(reads, 2);
+});
+
+test("model memory admission reads again after preflight before the first spawn", async t => {
+  const harness = await createHarness(t); let reads = 0, calls = 0;
+  const boundary = createStructuredPdfBoundary({ getFreeMemory: () => ++reads === 1 ? 8 * GiB : GiB });
+  await expectCode(boundary(harness.inputPath, options(harness, () => { calls++; }), async () => {}), "PDF_STRUCTURE_MEMORY_INSUFFICIENT");
+  assert.equal(reads, 2); assert.equal(calls, 0); assert.deepEqual(await fsp.readdir(harness.runtimeDir), []);
+});
+
+test("model memory admission checks after dequeue and releases the rejected slot", async t => {
+  const harness = await createHarness(t); let entered, release, calls = 0, secondReads = 0, free = 8 * GiB;
+  const started = new Promise(resolve => { entered = resolve; });
+  const hold = new Promise(resolve => { release = resolve; });
+  t.after(() => release());
+  const runOptions = options(harness, async (_file, args) => { calls++; await fsp.writeFile(path.join(args[4], "manifest.json"), JSON.stringify(validManifest())); });
+  const first = withStructuredPdf(harness.inputPath, runOptions, async () => { entered(); await hold; return "first"; });
+  await started;
+  const second = createStructuredPdfBoundary({ getFreeMemory: () => { secondReads++; return free; } })(harness.inputPath, runOptions, async () => assert.fail("low-memory request consumed"));
+  const rejected = expectCode(second, "PDF_STRUCTURE_MEMORY_INSUFFICIENT");
+  assert.equal(secondReads, 0); free = GiB; release();
+  assert.equal(await first, "first"); await rejected;
+  assert.equal(secondReads, 1); assert.equal(calls, 1);
+  assert.equal(await withStructuredPdf(harness.inputPath, runOptions, async () => "next"), "next");
+  assert.equal(calls, 2); assert.deepEqual(await fsp.readdir(harness.runtimeDir), []);
+});
+
+test("model memory admission blocks the next batch when available memory drops", async t => {
+  const harness = await smallBatches(t); let reads = 0, calls = 0;
+  const boundary = createStructuredPdfBoundary({ getFreeMemory: () => ++reads <= 2 ? 8 * GiB : GiB });
+  await expectCode(boundary(harness.inputPath, { ...harness, execFile: async (_file, args) => {
+    calls++; await writeBatchManifest(args);
+  } }, async () => assert.fail("incomplete output consumed")), "PDF_STRUCTURE_MEMORY_INSUFFICIENT");
+  assert.equal(reads, 3); assert.equal(calls, 1); assert.deepEqual(await fsp.readdir(harness.runtimeDir), []);
+});
+
+test("model memory admission fails closed for invalid or failed readings without leaking causes", async t => {
+  const harness = await createHarness(t); let calls = 0;
+  for (const value of [undefined, NaN, Infinity, -1, "8 GiB", new Error("private probe details")]) {
+    const boundary = createStructuredPdfBoundary({ getFreeMemory: () => { if (value instanceof Error) throw value; return value; } });
+    await assert.rejects(boundary(harness.inputPath, options(harness, () => { calls++; }), async () => {}), error => {
+      assert.equal(error.code, "PDF_STRUCTURE_MEMORY_INSUFFICIENT");
+      assert.equal(error.details.availableBytes, null); assert.equal(error.details.minimumFreeBytes, 5 * GiB);
+      assert.match(error.messages.zhCN, /无法读取/); assert.match(error.messages.enUS, /unavailable/);
+      assert.ok(!error.message.includes("private probe details")); return true;
+    });
+  }
+  assert.equal(calls, 0);
+});
+
+test("model memory admission preserves cancellation priority before and during a reading", async t => {
+  const harness = await createHarness(t); let reads = 0, calls = 0;
+  for (const alreadyCanceled of [true, false]) {
+    const controller = new AbortController(); if (alreadyCanceled) controller.abort();
+    const boundary = createStructuredPdfBoundary({ getFreeMemory: () => { reads++; controller.abort(); return 0; } });
+    await expectCode(boundary(harness.inputPath, { ...options(harness, () => { calls++; }), signal: controller.signal }, async () => {}), "CONVERSION_CANCELED");
+  }
+  assert.equal(reads, 1); assert.equal(calls, 0);
+});
+
+test("model memory admission preserves missing-engine/model and Lite guidance before querying RAM", async t => {
+  for (const missing of ["engine", "model", "lite"]) {
+    const harness = await createHarness(t); let reads = 0;
+    await fsp.rm(missing === "model" ? harness.modelDirectory : harness.enginePath, { recursive: true });
+    const boundary = createStructuredPdfBoundary({ getFreeMemory: () => { reads++; return GiB; } });
+    await assert.rejects(boundary(harness.inputPath, { ...harness, engineProfile: missing === "lite" ? "lite" : undefined }, async () => {}), error => {
+      assert.equal(error.code, missing === "model" ? "PDF_STRUCTURE_MODEL_MISSING" : "PDF_STRUCTURE_ENGINE_MISSING");
+      if (missing === "lite") assert.match(error.messages.zhCN, /轻量版/);
+      return true;
+    });
+    assert.equal(reads, 0);
+  }
+});
+
+test("cancellation during availability checks takes priority over memory or missing-engine errors", async t => {
+  const harness = await createHarness(t), controller = new AbortController();
+  await fsp.rm(harness.enginePath);
+  const boundary = createStructuredPdfBoundary({ getFreeMemory: () => assert.fail("canceled admission queried RAM"),
+    fileSystem: { ...fsp, async lstat(file) { controller.abort(); return fsp.lstat(file); } } });
+  await expectCode(boundary(harness.inputPath, { ...harness, signal: controller.signal }, async () => {}), "CONVERSION_CANCELED");
+});
+
+test("the default model memory reader is live and does not gate ordinary PDF text OCR", async t => {
+  const harness = await createHarness(t); let reads = 0;
+  t.mock.method(os, "freemem", () => { reads++; return GiB; });
+  await expectCode(createUnconfiguredBoundary()(harness.inputPath, options(harness, () => assert.fail("low-memory native spawn")), async () => {}), "PDF_STRUCTURE_MEMORY_INSUFFICIENT");
+  assert.equal(reads, 1);
+  const { fillMissingPdfPageText } = require("../pdf");
+  const before = reads; let terminated = false;
+  const pages = await fillMissingPdfPageText("unused.pdf", [{ pageNumber: 1, rows: [] }], {
+    ocrAvailable: () => true, createOcrWorker: async () => ({ terminate: async () => { terminated = true; } }),
+    renderPdfTablePage: async () => ({ outputPath: "scan.png" }),
+    recognizeImageResultWithWorker: async () => ({ text: "普通OCR保留1186.00", warnings: [] })
+  });
+  assert.equal(pages[0].rows.flat().join(""), "普通OCR保留1186.00"); assert.ok(terminated);
+  assert.equal(reads, before, "ordinary OCR must not consult the advanced model admission guard");
+});
 
 test("registers the runner test and development engine/model candidates", () => {
   const packageJson = require("../package.json");
@@ -169,13 +293,13 @@ test("serializes complete structured requests across boundaries, including their
     await new Promise(resolve => setTimeout(resolve, 80));
     assert.equal(calls, 1, "the waiting request must not initialize another native model instance");
     assert.deepEqual(secondProgress, [{ stage: "queued" }]);
-    assert.equal(firstProgress.at(-1).stage, "validating", "queued status belongs only to the waiting request");
+    assert.deepEqual(firstProgress.at(-1), { stage: "converting" }, "output consumer has unknown conversion work, not completed recognition counts");
   } finally {
     release();
     assert.deepEqual(await Promise.all([first, second]), ["first", "second"]);
   }
   assert.equal(calls, 2);
-  assert.equal(secondProgress.at(-1).stage, "validating");
+  assert.deepEqual(secondProgress.at(-1), { stage: "converting" });
   assert.deepEqual(timeouts, [DEFAULT_TIMEOUT_MS, 25], "queue waiting must not consume the native execution timeout");
   assert.deepEqual(await fsp.readdir(harness.runtimeDir), []);
 });
@@ -222,7 +346,7 @@ test("application shutdown cancels queued requests before another model starts",
     let started, release, calls = 0;
     const entered = new Promise(resolve => { started = resolve; });
     const hold = new Promise(resolve => { release = resolve; });
-    const boundary = createStructuredPdfBoundary({ preflightPdf: async () => ({ pageCount: 1 }) });
+    const boundary = createStructuredPdfBoundary({ getFreeMemory: () => 8 * 1024 ** 3, preflightPdf: async () => ({ pageCount: 1 }) });
     const options = { ...harness, execFile: async (_file, args) => {
       calls++; started(); await hold;
       await fs.writeFile(path.join(args[4], 'manifest.json'), '{}');
@@ -512,7 +636,7 @@ test("structured progress advances only after each native batch passes validatio
       calls++;
       await writeBatchManifest(args);
     }
-  }, async () => { assert.equal(events.at(-1).stage, "validating"); }));
+  }, async () => { assert.deepEqual(events.at(-1), { stage: "converting" }); }));
   assert.deepEqual(events.filter(event => event.stage === "recognizing").map(event => [event.completed, event.total]), [[0, 2], [1, 2], [2, 2]]);
   assert.ok(!events.some(event => ["succeeded", "completed"].includes(event.stage)));
 });

@@ -766,6 +766,7 @@ app.post("/api/convert", assertLocalWebRequest, conversionProgress.begin, upload
             await fsp.copyFile(emitted.files[0].filePath, outputPath);
             downloadName = `${base}.${requestedTarget}`;
           } else {
+            reportConversionProgress({ stage: "converting" });
             await zipFiles(emitted.files.map((item) => ({ inputPath: item.filePath, archiveName: item.name })), outputPath);
             downloadName = `${base}.${requestedTarget}.zip`;
           }
@@ -863,6 +864,7 @@ app.post("/api/convert", assertLocalWebRequest, conversionProgress.begin, upload
       "CSV_PARSE_FAILED",
       "PDF_TABLE_OCR_REQUIRED",
       "PDF_TABLE_OCR_EMPTY",
+      "PDF_STRUCTURE_MEMORY_INSUFFICIENT",
       "MEDIA_NO_AUDIO_TRACK",
       "PDF_OCR_REQUIRED",
       "XML_JSON_PARSE_FAILED",

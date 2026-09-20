@@ -444,6 +444,7 @@ async function convertPdf(inputPath, outputPath, target, options = {}) {
   if (target === "xlsx") {
     const model = await extractComplexPdfTableModel(inputPath, { ...options, classification });
     assertPdfTableOcrQuality(model);
+    reportConversionProgress({ stage: "converting" });
     await writePdfTableWorkbook(model, outputPath);
     return;
   }
@@ -936,7 +937,8 @@ async function splitPdfToZip(inputPath, outputPath, options = {}) {
       if (!entries.length) {
         throw new Error("PDF 拆分失败，未生成任何页面。");
       }
-      reportConversionProgress({ stage: "validating", completed: entries.length, total: entries.length, unit: "files" });
+      // Generated pages do not measure the ZIP write still pending.
+      reportConversionProgress({ stage: "converting" });
       await zipFiles(entries, outputPath);
     } finally {
       await fsp.rm(tempDir, { recursive: true, force: true }).catch(() => {});
@@ -970,7 +972,7 @@ async function splitPdfToZip(inputPath, outputPath, options = {}) {
     if (!entries.length) {
       throw new Error("PDF 拆分失败，未生成任何页面。");
     }
-    reportConversionProgress({ stage: "validating" });
+    reportConversionProgress({ stage: "converting" });
     await zipFiles(entries, outputPath);
   } finally {
     await fsp.rm(tempDir, { recursive: true, force: true }).catch(() => {});
@@ -995,7 +997,7 @@ async function mergePdfFiles(pdfFiles, outputPath, options = {}) {
     reportConversionProgress({ stage: "merging", completed: ++completedFiles, total: pdfFiles.length, unit: "files" });
   }
   throwIfCanceled(options.signal);
-  reportConversionProgress({ stage: "validating" });
+  reportConversionProgress({ stage: "merging" });
   const bytes = await merged.save();
   throwIfCanceled(options.signal);
   if (!bytes.length) {
@@ -1090,6 +1092,7 @@ async function emitPdfPageImages(inputPath, baseName, target, options = {}) {
 async function convertPdfPagesToImagesZip(inputPath, outputPath, target, options = {}) {
   const rendered = await renderPdfPages(inputPath, target, 300, options);
   try {
+    reportConversionProgress({ stage: "converting" });
     await zipFiles(
       rendered.files.map((file, index) => ({
         inputPath: file,
@@ -1187,6 +1190,7 @@ async function convertPresentationToImages(inputPath, outputPath, originalName, 
     const base = safeBaseName(originalName);
     const emitted = await emitPdfPageImages(pdfPath, base, target);
     try {
+      reportConversionProgress({ stage: "converting" });
       await zipFiles(
         emitted.files.map((item) => ({ inputPath: item.filePath, archiveName: item.name })),
         outputPath

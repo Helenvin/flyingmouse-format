@@ -15,6 +15,11 @@ const ENGINE_PROFILE = require("./package.json").engineProfile;
 
 const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000;
 const DEFAULT_MAX_BUFFER_BYTES = 1024 * 1024;
+// A measured one-page model run used about 3.4 GiB of working set. Keep a
+// separate admission reserve for that fixed model cost; generic image/pixel
+// budgets do not cover it. This is a conservative minimum preflight, not a
+// maximum memory promise for every input or a reservation against other apps.
+const STRUCTURED_PDF_MIN_FREE_MEMORY_BYTES = 5 * 1024 ** 3;
 
 function structuredPdfThreadBudget(available = typeof os.availableParallelism === "function"
   ? os.availableParallelism() : os.cpus().length) {
@@ -279,6 +284,24 @@ function createStructuredPdfBoundary(dependencies = {}) {
   const defaultEnginePath = dependencies.defaultEnginePath ?? DOCSTRUCTURE_ENGINE_PATH;
   const defaultModelDirectory = dependencies.defaultModelDirectory ?? DOCSTRUCTURE_MODEL_DIR;
   const defaultRuntimeDir = dependencies.defaultRuntimeDir ?? RUNTIME_DIR;
+  const getFreeMemory = dependencies.getFreeMemory || (() => os.freemem());
+
+  function assertModelMemory(signal) {
+    throwIfCanceled(signal);
+    let availableBytes = null;
+    try {
+      const measured = getFreeMemory();
+      if (Number.isFinite(measured) && measured >= 0) availableBytes = measured;
+    } catch { /* Unavailable measurements fail closed without exposing causes. */ }
+    throwIfCanceled(signal);
+    if (availableBytes !== null && availableBytes >= STRUCTURED_PDF_MIN_FREE_MEMORY_BYTES) return;
+    const availableGiB = availableBytes === null ? null : (Math.floor(availableBytes / 1024 ** 3 * 100) / 100).toFixed(2);
+    const error = structureError("PDF_STRUCTURE_MEMORY_INSUFFICIENT",
+      `高级 PDF 结构识别的当前可用内存${availableGiB === null ? "无法读取" : `约 ${availableGiB} GiB`}，启动前至少需要 5 GiB 可用内存。请关闭其他应用后重试，或改用 PDF 转 TXT 提取文本。`,
+      `Available memory for advanced PDF structure recognition is ${availableGiB === null ? "unavailable" : `about ${availableGiB} GiB`}; at least 5 GiB must be available before starting. Close other apps and retry, or convert the PDF to TXT to extract text.`);
+    error.details = { minimumFreeBytes: STRUCTURED_PDF_MIN_FREE_MEMORY_BYTES, availableBytes };
+    throw error;
+  }
 
   async function outputBytes(directory, signal) {
     const root = await fileSystem.realpath(directory);
@@ -310,6 +333,9 @@ function createStructuredPdfBoundary(dependencies = {}) {
     const args = ["parse", "--input", inputPath, "--output", temporaryDirectory,
       "--models", options.modelDirectory, "--language", "ch"];
 
+    // Re-read immediately before every native batch. Keep this outside the
+    // native-error translation below so admission is never a parse failure.
+    assertModelMemory(options.signal);
     try {
       throwIfCanceled(options.signal);
       const threadBudget = String(structuredPdfThreadBudget());
@@ -396,7 +422,12 @@ function createStructuredPdfBoundary(dependencies = {}) {
     const runtimeDir = options.runtimeDir || defaultRuntimeDir;
     const availability = await getStructuredPdfAvailability({ fileSystem, enginePath, modelDirectory,
       engineProfile: options.engineProfile });
+    throwIfCanceled(options.signal);
     if (!availability.enabled) throw stableError(availability.errorCode, options.engineProfile);
+    // This function runs only after the request has acquired the model slot.
+    // Preserve missing-engine/model errors, then admit before reading the PDF
+    // or allocating scratch; waiting callers cannot reuse a stale decision.
+    assertModelMemory(options.signal);
     const plan = await (dependencies.preflightPdf || preflightStructuredPdf)(inputPath,
       { fileSystem, signal: options.signal, maxBatchPixels: options.maxBatchPixels });
     reportConversionProgress({ stage: "recognizing", completed: 0, total: plan.pageCount, unit: "pages" });
@@ -467,7 +498,7 @@ function createStructuredPdfBoundary(dependencies = {}) {
         manifest = await (options.validateManifest || validateStructureManifest)(manifest, temporaryDirectory);
       }
       throwIfCanceled(options.signal);
-      reportConversionProgress({ stage: "validating" });
+      reportConversionProgress({ stage: "converting" });
       result = await consume(manifest, temporaryDirectory);
       throwIfCanceled(options.signal);
     } catch (error) {
@@ -502,5 +533,6 @@ function createStructuredPdfBoundary(dependencies = {}) {
 const withStructuredPdf = createStructuredPdfBoundary();
 
 module.exports = { DEFAULT_MAX_BUFFER_BYTES, DEFAULT_TIMEOUT_MS, REQUIRED_MODELS, structuredPdfThreadBudget,
+  STRUCTURED_PDF_MIN_FREE_MEMORY_BYTES,
   STRUCTURED_PDF_LIMITS, getStructuredPdfAvailability, preflightStructuredPdf,
   createStructuredPdfBoundary, withStructuredPdf };

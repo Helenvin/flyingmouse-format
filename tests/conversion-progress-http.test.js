@@ -16,10 +16,28 @@ const config = require("../config");
 config.MAX_UPLOAD_BYTES = 4096;
 // Capability discovery is unrelated to this lifecycle test. All conversions
 // below still execute the real routes, Multer storage and JS image/PDF engines.
-mock.method(require("../utils"), "commandExists", async () => false);
+let renderedPageFixtures = null;
+mock.method(require("../utils"), "commandExists", async command => command === config.PDFTOPPM_PATH);
+// The native rendering boundary supplies deterministic tiny pages. HTTP,
+// Sharp WEBP conversion, ZIP writing and progress reporting remain real.
+mock.method(require("../utils"), "run", async (command, args, options) => {
+  assert.equal(command, config.PDFTOPPM_PATH);
+  assert.ok(args.includes("-progress") && renderedPageFixtures);
+  const prefix = args.at(-1);
+  for (const [index, bytes] of renderedPageFixtures.entries()) {
+    const output = `${prefix}-${index + 1}.png`;
+    await fsp.writeFile(output, bytes);
+    options.onStderr(Buffer.from(`${index + 1} ${renderedPageFixtures.length} ${output}\n`));
+  }
+  return { stdout: "", stderr: "" };
+});
 mock.method(require("../office-engine"), "probeLibreOffice", async () => ({ enabled: false }));
 mock.method(require("../markdown-document"), "pandocPath", () => "");
 mock.method(require("../pdf-structure-engine"), "getStructuredPdfAvailability", async () => ({ enabled: false }));
+const structuredBoundary = require("../pdf-structure-engine").withStructuredPdf;
+let structuredFailure = null;
+mock.method(require("../pdf-structure-engine"), "withStructuredPdf", (...args) =>
+  structuredFailure ? Promise.reject(structuredFailure) : structuredBoundary(...args));
 const { app } = require("../server");
 let server, origin;
 before(async () => {
@@ -94,6 +112,26 @@ test("upload rejection, route validation and thrown conversion errors terminate 
     const response = await fetch(origin + "/api/convert", { method: "POST", headers: { "X-FlyingMouse-Progress-Id": id }, body: form });
     assert.ok(response.status >= 400); await response.json(); assert.equal((await progress(id)).status, "failed");
   }
+});
+
+test("advanced PDF memory admission is a bilingual client rejection with failed progress", async t => {
+  // Admission mechanics are tested by pdf-structure-engine.test.js. Inject its
+  // stable failure here to exercise the real HTTP classification and cleanup.
+  const messages = { zhCN: '高级 PDF 结构识别至少需要 5 GiB 可用内存。', enUS: 'Advanced PDF structure recognition requires 5 GiB available memory.' };
+  structuredFailure = Object.assign(new Error(messages.enUS), { code: 'PDF_STRUCTURE_MEMORY_INSUFFICIENT', messages });
+  t.after(() => { structuredFailure = null; });
+  const pdf = await PDFDocument.create();
+  const png = await require('sharp')({ create: { width: 2, height: 2, channels: 3, background: '#304050' } }).png().toBuffer();
+  const embedded = await pdf.embedPng(png);
+  pdf.addPage([100, 100]).drawImage(embedded, { x: 0, y: 0, width: 100, height: 100 });
+  const form = new FormData(), id = randomUUID(), beforeDownloads = config.downloads.size;
+  form.append('file', new Blob([await pdf.save()]), '扫描.pdf'); form.append('targetFormat', 'docx');
+  const response = await fetch(origin + '/api/convert', { method: 'POST', headers: { 'X-FlyingMouse-Progress-Id': id }, body: form });
+  const result = await response.json();
+  assert.equal(response.status, 422);
+  assert.equal(result.errorCode, 'PDF_STRUCTURE_MEMORY_INSUFFICIENT'); assert.deepEqual(result.messages, messages);
+  assert.equal(result.downloadUrl, undefined); assert.equal(config.downloads.size, beforeDownloads);
+  const state = await progress(id); assert.equal(state.status, 'failed'); assert.equal(state.stage, 'failed');
 });
 
 test("output validation failure cannot publish succeeded after the engine returns", async t => {
@@ -244,5 +282,63 @@ test("explicit GBK and BOM-marked UTF-16 produce actual EPUBs with the original 
     const archive = await require("jszip").loadAsync(fs.readFileSync(output), { checkCRC32: true });
     assert.ok((await archive.file("OEBPS/chapter-1.xhtml").async("string")).includes(`<p>${sample.expected}</p>`), sample.name);
     assert.equal((await progress(id)).status, "succeeded");
+  }
+});
+
+for (const failWrite of [false, true]) test(`PDF WEBP output clears completed page counts while ZIP is writing; failure=${failWrite}`, async t => {
+  const sharp = require("sharp"), colors = [{ r: 255, g: 0, b: 0 }, { r: 0, g: 0, b: 255 }];
+  renderedPageFixtures = await Promise.all(colors.map(background => sharp({ create: { width: 2, height: 2, channels: 3, background } }).png().toBuffer()));
+  t.after(() => { renderedPageFixtures = null; });
+  const pdf = await PDFDocument.create(); pdf.addPage([2, 2]); pdf.addPage([2, 2]);
+  const input = await pdf.save(), id = randomUUID(), form = new FormData();
+  form.append("file", new Blob([input]), "两页.pdf"); form.append("targetFormat", "webp");
+  const create = fs.createWriteStream;
+  let entered, release, ownOutput;
+  const started = new Promise(resolve => { entered = resolve; });
+  const barrier = new Promise(resolve => { release = resolve; });
+  t.after(release);
+  t.mock.method(fs, "createWriteStream", (file, ...args) => {
+    const stream = create(file, ...args);
+    if (path.resolve(String(file)).startsWith(path.resolve(config.OUTPUT_DIR) + path.sep)) {
+      ownOutput = String(file);
+      const write = stream._write; let held = false;
+      stream._write = function(chunk, encoding, callback) {
+        if (held) return write.call(this, chunk, encoding, callback);
+        held = true; entered();
+        barrier.then(() => failWrite ? callback(Object.assign(new Error("ZIP write failed"), { code: "ENOSPC" })) : write.call(this, chunk, encoding, callback));
+      };
+    }
+    return stream;
+  });
+  const beforeDownloads = config.downloads.size;
+  const request = fetch(origin + "/api/convert", { method: "POST", headers: { "X-FlyingMouse-Progress-Id": id }, body: form });
+  let timer, during;
+  try {
+    await Promise.race([started, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("ZIP write was not reached")), 5000); })]);
+    during = await progress(id);
+  } finally { clearTimeout(timer); release(); }
+  const response = await request, result = await response.json();
+  t.diagnostic(`Observed during real ZIP write: ${JSON.stringify(during)}`);
+  assert.equal(during.status, "running");
+  assert.equal(during.stage, "converting");
+  assert.equal(during.completed, null, "finished page counts must not describe ongoing ZIP output");
+  assert.equal(during.total, null); assert.equal(during.unit, null);
+  if (failWrite) {
+    assert.equal(response.status, 500); assert.equal(result.downloadUrl, undefined);
+    assert.equal((await progress(id)).status, "failed");
+    assert.equal(config.downloads.size, beforeDownloads); assert.equal(fs.existsSync(ownOutput), false);
+    return;
+  }
+  assert.equal(response.status, 200); assert.equal((await progress(id)).status, "succeeded");
+  const output = Buffer.from(await (await fetch(origin + result.downloadUrl)).arrayBuffer());
+  const archive = await require("jszip").loadAsync(output, { checkCRC32: true });
+  const names = Object.keys(archive.files).filter(name => !archive.files[name].dir);
+  assert.deepEqual(names, ["两页-第1页.webp", "两页-第2页.webp"]);
+  for (const [index, name] of names.entries()) {
+    const bytes = await archive.file(name).async("nodebuffer");
+    const { data, info } = await sharp(bytes).removeAlpha().raw().toBuffer({ resolveWithObject: true });
+    assert.equal(info.width, 2); assert.equal(info.height, 2); assert.equal(info.channels, 3);
+    const expected = Object.values(colors[index]);
+    for (let pixel = 0; pixel < data.length; pixel++) assert.ok(Math.abs(data[pixel] - expected[pixel % 3]) <= 4, "WEBP page content changed");
   }
 });

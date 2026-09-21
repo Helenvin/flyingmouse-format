@@ -1,6 +1,6 @@
 # FlyingMouse Format / 飞鼠格式
 
-> **0.7.10 Windows 公开版 / Windows release**：修复大 TXT 转 EPUB 资源暴涨、混合 PDF 漏页和结果保存问题，增加真实耗时与阶段进度。此次提供 Windows 10/11 x64 完整版；Microsoft Store 更新独立进行，0.7.10 尚未在商店发布。见 [版本说明 / Release notes](docs/release-notes-0710.md)。
+> **0.7.10 Windows 公开版 / Windows release**：修复大 TXT 转 EPUB 资源暴涨、混合 PDF 漏页和结果保存问题，增加真实耗时与阶段进度。此次提供 Windows 10/11 x64 完整版；Microsoft Store 状态独立核对。见 [版本说明 / Release notes](docs/release-notes-0710.md)。
 
 > A mouse-themed, offline Windows file converter. / 一款鼠鼠主题、可离线使用的 Windows 文件格式转换工具。
 
@@ -36,7 +36,7 @@
 - 结果预览：转换完成后可在侧边抽屉预览图片、PDF、文本、音频和视频；窄窗口自动切换为底部面板。
 - CLI 与 Agent 接入：命令行覆盖能力查询、目标查询、单个/批量转换、图片合并 PDF 和 PDF 合并；应用内可把配套 skill 一键接入现有 Codex、Claude 或通用 Agent 目录。
 - 转换质量：HTML / Office 转 Markdown 保留标题、列表和代码块；CSV 支持 BOM、转义引号和字段内换行。
-- PDF → Excel（智能表格提取）：支持电子文字坐标、扫描页 OCR、有框/无框表格、多表、跨页续接、合并单元格、低置信度批注与 Raw 回退。
+- PDF → Excel（智能表格提取）：支持电子文字坐标、扫描页 OCR、有框/无框表格、多表、跨页续接、合并单元格和低置信度批注。Raw 工作表仅保留原生非表格文字；扫描页无法恢复时明确失败。
 - PDF → Word：Windows 10/11 优先使用版式引擎，检查文字覆盖后再接受结果；旋转文字和碎片正文可重建为可编辑段落，混合扫描页逐页处理。降级重建和 OCR 会显示说明；复杂多栏、图片定位和扫描标点不能保证与原 PDF 完全一致。
 - PDF 拆分 / 加密 / 解密：PDF 可逐页拆分或每 N 页一组（打包 ZIP），也可用密码加密（AES-256）或解密（需原密码）。
 - 电子书：txt/md/html → EPUB；EPUB → TXT/Markdown/HTML，以及有 LibreOffice 时转 PDF/DOCX。读取按章节目录排序，缺章、缺图、加密及不支持的 MOBI 压缩会明确失败；复杂 CSS 版式会简化。
@@ -52,7 +52,7 @@
 
 ### 快速开始
 
-0.7.10 提供 Windows 10/11 x64 完整版，已在 Windows 11 完成原生成品转换、启动和交互验证。Lite、macOS 和 Windows 7 的 0.7.10 安装包此次未发布；Microsoft Store 0.7.10 更新也尚未发布。其他系统与硬件的验证边界见[版本说明](docs/release-notes-0710.md)。
+0.7.10 提供 Windows 10/11 x64 完整版，已在 Windows 11 完成原生成品转换、启动和交互验证。Lite、macOS 和 Windows 7 的 0.7.10 安装包此次未发布；商店状态见[分渠道记录](docs/REPAIR-0.7.10.md)。其他系统与硬件的验证边界见[版本说明](docs/release-notes-0710.md)。
 
 1. 下载 v0.7.10 对应系统的安装包：本次仅提供 [Windows 10/11 x64 完整版（FlyingMouse-Format-Setup-0.7.10-x64.exe）](https://github.com/LaoFeng-mouse/flyingmouse-format/releases/download/v0.7.10/FlyingMouse-Format-Setup-0.7.10-x64.exe)。
 2. 安装并启动 FlyingMouse Format。
@@ -97,7 +97,7 @@ npm run dist
 | Windows 10/11 x64 完整版 | GitHub 公开安装包，包含高级扫描表格引擎；实际设备验收为 Windows 11。 |
 | Windows Lite、macOS | 本次未发布对应安装包。源码/CI 支持不等于成品已交付。 |
 | Windows 7 | 本次未发布；仅保留源码构建目标 `FlyingMouse Format-Setup-0.7.10-win7-x64.exe`，不是可下载资产。 |
-| Microsoft Store | 独立提交与认证渠道，0.7.10 尚未在商店发布。 |
+| Microsoft Store | 独立提交与认证渠道；本轮没有 0.7.10 商店发布凭证，现场状态见分渠道记录。 |
 
 公开 Windows 安装包未签名，SmartScreen 可能提示。Windows 10、旧系统、其他显卡和商店签名版升级仍需对应环境验证，不能以本机通过保证所有电脑兼容。开发构建与 Legacy 依赖边界见[发布流程](docs/RELEASE.md)。
 
@@ -118,10 +118,11 @@ npm run dist
 - Result previews for images, PDFs, text, audio, and video in a responsive side drawer / bottom sheet.
 - A complete CLI plus one-click Agent skill installation for existing Codex, Claude, and generic Agent skill directories.
 - Higher-quality text conversion: structural HTML/Office Markdown plus standards-compliant quoted and multiline CSV parsing.
-- PDF → Excel smart table extraction for digital text and scanned pages, including multiple tables, continued pages, merged cells, confidence notes, and Raw fallback.
-- PDF → Word (layout-preserving): the bundled pdf2docx engine restores paragraphs, tables, images, fonts, and layout; scanned PDFs fall back to OCR. Layout restoration is available on Windows 10/11; Windows 7 falls back to text extraction.
+- PDF → Excel extracts tables from digital text and scanned pages, including multiple tables, continued pages, merged cells and confidence notes. Page coverage is checked; unreadable scanned tables fail explicitly. Raw worksheets preserve unstructured native text, not failed scanned-table recognition.
+- PDF → Word on Windows 10/11 checks text coverage before accepting layout-engine output. Scanned and mixed PDFs use the advanced structure engine when available; eligible failures can fall back to editable OCR paragraphs with a layout warning. Complex columns, image positions and scanned punctuation may differ from the original PDF.
 - PDF split / encrypt / decrypt: split a PDF per page or into groups of N pages (packed as a ZIP), or password-protect it (AES-256) and decrypt it (requires the original password).
-- E-books: txt/md/html → EPUB (generated locally); EPUB → TXT/Markdown; MOBI → EPUB/TXT/Markdown (MOBI parsing is experimental; complex layouts may be incomplete).
+- E-books: txt/md/html → EPUB; EPUB → TXT/Markdown/HTML and, with LibreOffice, PDF/DOCX; experimental MOBI → EPUB/TXT/Markdown. Reading follows chapter order. Missing chapters or images, encryption and unsupported MOBI compression fail explicitly; complex CSS and fixed layouts may be simplified.
+- Text-to-EPUB source encoding: UTF-8, GBK/GB18030 and UTF-16LE/BE. Auto accepts UTF-8 and UTF-16 with a BOM; strict decoding failures ask you to select the correct encoding and retry.
 - Image-to-PDF ordering: when merging multiple images into a PDF, reorder items with up/down controls before converting; PDF page order follows the queue.
 - HEIC/HEIF images convert to JPG/PNG/WebP and more (built-in ffmpeg decoding).
 - ICO icons convert to PNG/JPG and more; PNG/JPG can also produce multi-size ICO icons (experimental).
@@ -133,7 +134,7 @@ npm run dist
 
 ### Quick start
 
-Version 0.7.10 provides the full Windows 10/11 x64 installer, tested on Windows 11. Lite, Windows 7 and macOS installers are not included in this release. The Microsoft Store update is separate and version 0.7.10 has not been released there. See the [release notes](docs/release-notes-0710.md).
+Version 0.7.10 provides the full Windows 10/11 x64 installer, tested on Windows 11. Lite, Windows 7 and macOS installers are not included in this release. Microsoft Store status is tracked separately in the [channel record](docs/REPAIR-0.7.10.md). See the [release notes](docs/release-notes-0710.md).
 
 1. Download [FlyingMouse-Format-Setup-0.7.10-x64.exe](https://github.com/LaoFeng-mouse/flyingmouse-format/releases/download/v0.7.10/FlyingMouse-Format-Setup-0.7.10-x64.exe).
 2. Install and launch FlyingMouse Format.
@@ -164,7 +165,7 @@ Packaged builds accept the same commands after `--cli`: use `FlyingMouse Format.
 | Full Windows 10/11 x64 | Public GitHub installer with the advanced scanned-table engine; device acceptance was on Windows 11. |
 | Windows Lite, macOS | No installers published in this release. Source and CI coverage do not establish packaged availability. |
 | Windows 7 | Not published; `FlyingMouse Format-Setup-0.7.10-win7-x64.exe` is only a source build target, not a downloadable asset. |
-| Microsoft Store | Separate submission and certification; 0.7.10 is not released on the Store. |
+| Microsoft Store | Separate submission and certification; this work has no Store publication receipt for 0.7.10. Consult the dated channel record. |
 
 The Windows installer is unsigned and may trigger SmartScreen. Windows 10, other hardware and Store-signed upgrades need their own validation; this release does not guarantee compatibility with every machine. Developer build instructions and Legacy dependency boundaries are in the [release workflow](docs/RELEASE.md).
 

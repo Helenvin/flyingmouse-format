@@ -2,7 +2,7 @@
 
 作者：牢蜂（LaoFeng）。仅供个人免费使用，禁止商业售卖、转卖及套壳。
 
-2026-09-21。本次提供 **Windows 10/11 x64 完整版**：[下载安装包](https://github.com/LaoFeng-mouse/flyingmouse-format/releases/download/v0.7.10/FlyingMouse-Format-Setup-0.7.10-x64.exe)。Lite、macOS、Windows 7 的 0.7.10 安装包未发布；Microsoft Store 0.7.10 更新也尚未发布。
+2026-09-21。本次提供 **Windows 10/11 x64 完整版**：[下载安装包](https://github.com/LaoFeng-mouse/flyingmouse-format/releases/download/v0.7.10/FlyingMouse-Format-Setup-0.7.10-x64.exe)。Lite、macOS、Windows 7 的 0.7.10 安装包未发布；本轮未执行 Microsoft Store 0.7.10 提交。各渠道状态与观察时间见[修复与发布记录](https://github.com/LaoFeng-mouse/flyingmouse-format/blob/main/docs/REPAIR-0.7.10.md)。
 
 ## 本次修复
 
@@ -36,4 +36,6 @@ SHA-256：
 56c022bc5ec1904300c8ffe77f892d0bea09fe157fbbf402589a64decab2587b
 ```
 
-Windows 安装器未签名，SmartScreen 可能提示。公开版不提供平台加密音乐解锁，PDF 转 DWG 尚未实现。
+Windows 安装器未签名，SmartScreen 可能提示。PDF 转 DWG 尚未实现。
+
+音频仅支持普通音乐格式（MP3/WAV/FLAC/AAC 等），不支持其他音乐平台的加密特殊格式。请支持正版音乐，尊重创作者；本工具与各音乐平台无任何关联。

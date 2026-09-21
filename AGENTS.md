@@ -1,12 +1,8 @@
-# 当前公开版：0.7.10 Windows 10/11 x64
-
-0.7.10 公开交付 Windows 完整版，保留 0.7.9 稳定性修复并修复内容丢失、TXT→EPUB 资源暴涨、进度和 UI 生命周期问题。[发布说明](docs/release-notes-0710.md)与 [REPAIR-0.7.10.md](docs/REPAIR-0.7.10.md)区分当前发布与历史候选状态。Lite、macOS、Win7 的 0.7.10 安装器未发布，Microsoft Store 0.7.10 更新也尚未发布；不能从仓库/CI 状态推断商店认证或客户端升级。CAD 工作未纳入，本地音乐专用模块不在公开分支。
-
-本次安装器仍来自生产构建 `5d90f84`；`830c4d8` 仅补强两个未打包测试，`92f26a5` 合并树与之相同，后续发布文档不改变二进制。不要因测试或文档提交更新而改写既有构建来源。Windows 11 已完成列明的成品验收，Windows 10、其他硬件及商店签名版升级需独立验证。
-
-Windows 构建使用 package.json 的构建配置，需先准备锁定引擎与 MSVC。完整重建 EXE/ASAR 后由 afterSign 附加原生入口。不得关闭 GPU 或渲染器沙箱、全局重置 ACL 或按 Unknown Account 名称批量删除权限。
-
 # AGENTS.md
+
+现役版本、渠道状态与产物来源统一查 [0.7.10 修复与发布记录](docs/REPAIR-0.7.10.md)，用户变化见[发布说明](docs/release-notes-0710.md)。GitHub 发布、本地 MSIX、商店认证和客户端安装必须分别验证；不要用后续测试或文档提交改写已验收二进制的构建来源。CAD 工作仍暂停，本地音乐专用模块不在公开分支。
+
+Windows 构建使用 package.json 配置和锁定引擎，需准备 MSVC。完整重建 EXE/ASAR 后由 afterSign 附加原生入口。不得关闭 GPU 或渲染器沙箱、全局重置 ACL 或按 Unknown Account 名称批量删除权限。
 
 ## Project boundary
 
@@ -131,7 +127,7 @@ npm audit --omit=dev --prefix output\win7-stage
 - `README.md`：面向用户的中英文介绍、下载与格式范围。
 - `docs/ARCHITECTURE.md`：运行架构、状态和数据边界。
 - `docs/RELEASE.md`：本机测试、打包、桌面同步与 GitHub 发布清单。
-- `docs/HANDOFF.md`：恢复工作入口；候选状态与剩余风险指向 `docs/REPAIR-0.7.10.md`。
+- `docs/HANDOFF.md`：恢复工作入口；分渠道状态、来源与剩余风险指向 `docs/REPAIR-0.7.10.md`。
 - `docs/privacy-policy.html`：面向用户和 Microsoft Store 的隐私政策。
 - `docs/微软商店上架清单.md`、`docs/上架材料包.md`：商店渠道资料；外部审核状态必须写绝对日期并注明是否已现场复核。
 

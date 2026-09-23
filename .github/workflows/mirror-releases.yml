@@ -1,0 +1,29 @@
+name: Mirror full-version releases
+on:
+  workflow_dispatch:
+    inputs:
+      tags:
+        description: tags to mirror
+        required: true
+        default: v0.5.5 v0.5.4
+permissions:
+  contents: write
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Mirror assets from upstream
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          for TAG in ${{ github.event.inputs.tags }}; do
+            echo "=== mirror $TAG ==="
+            mkdir -p dl/$TAG
+            gh release download "$TAG" --repo LaoFeng-mouse/flyingmouse-format --dir "dl/$TAG" --clobber
+            ls -lh dl/$TAG
+            gh release upload "$TAG" dl/$TAG/* --repo ${{ github.repository }} --clobber
+            rm -rf "dl/$TAG"
+          done
+          echo "=== done ==="
